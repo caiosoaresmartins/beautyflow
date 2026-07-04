@@ -1,0 +1,319 @@
+// BeautyFlow — Prisma Schema
+// Versão: 0.4 | Atualizado após revisão de QA completa
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── TENANT ────────────────────────────────────────────────────────────────
+
+model Salon {
+  id          String   @id @default(cuid())
+  name        String
+  timezone    String   @default("America/Sao_Paulo") // fix: 1.5 timezone
+  cnpj        String?  // armazenado criptografado via AES-256 no app layer (fix: 5.2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  professionals Professional[]
+  services      Service[]
+  bookings      Booking[]
+  subscriptions Subscription[]
+  plans         Plan[]
+  holidays      SalonHoliday[]    // fix: 1.6 feriados
+  webhookEvents WebhookEvent[]    // fix: 3.1 idempotência
+
+  @@map("salons")
+}
+
+// ─── PROFISSIONAL ───────────────────────────────────────────────────────────
+
+model Professional {
+  id                 String           @id @default(cuid())
+  salonId            String
+  name               String
+  role               ProfessionalRole @default(PROFESSIONAL)
+  gatewayRecipientId String?          // walletId/recipientId no gateway
+  commissionRules    CommissionRule[]
+  workingHours       WorkingHours[]
+  leaveBlocks        LeaveBlock[]     // fix: 1.6 bloqueios pontuais
+  bookings           Booking[]
+  salon              Salon            @relation(fields: [salonId], references: [id])
+  createdAt          DateTime         @default(now())
+
+  @@map("professionals")
+}
+
+enum ProfessionalRole {
+  OWNER
+  PROFESSIONAL
+  RECEPTIONIST
+}
+
+model WorkingHours {
+  id             String       @id @default(cuid())
+  professionalId String
+  dayOfWeek      Int          // 0=Dom ... 6=Sab
+  startTime      String       // "09:00" — hora local do salão
+  endTime        String       // "18:00"
+  professional   Professional @relation(fields: [professionalId], references: [id])
+
+  @@unique([professionalId, dayOfWeek])
+  @@map("working_hours")
+}
+
+model LeaveBlock {
+  id             String       @id @default(cuid())
+  professionalId String
+  startsAt       DateTime     // UTC
+  endsAt         DateTime     // UTC
+  reason         String?
+  professional   Professional @relation(fields: [professionalId], references: [id])
+
+  @@map("leave_blocks")
+}
+
+model SalonHoliday {
+  id      String   @id @default(cuid())
+  salonId String
+  date    DateTime // UTC
+  name    String
+  salon   Salon    @relation(fields: [salonId], references: [id])
+
+  @@map("salon_holidays")
+}
+
+// ─── SERVIÇO ────────────────────────────────────────────────────────────────
+
+model Service {
+  id              String         @id @default(cuid())
+  salonId         String
+  name            String
+  durationMinutes Int            // fix: 1.2 duração real por serviço
+  priceDefault    Decimal        @db.Decimal(10, 2)
+  category        String         // dinâmico por salão — fix: 2.7
+  active          Boolean        @default(true)
+  salon           Salon          @relation(fields: [salonId], references: [id])
+  commissionRules CommissionRule[]
+  bookings        Booking[]
+
+  @@map("services")
+}
+
+model CommissionRule {
+  id              String       @id @default(cuid())
+  professionalId  String
+  serviceId       String?      // null = regra padrão do profissional
+  professionalPct Decimal      @db.Decimal(5, 2) // ex: 60.00
+  salonPct        Decimal      @db.Decimal(5, 2) // ex: 25.00
+  platformPct     Decimal      @db.Decimal(5, 2) // ex: 15.00
+  // Constraint app layer: professionalPct + salonPct + platformPct = 100
+  professional    Professional @relation(fields: [professionalId], references: [id])
+  service         Service?     @relation(fields: [serviceId], references: [id])
+
+  @@map("commission_rules")
+}
+
+// ─── AGENDAMENTO ────────────────────────────────────────────────────────────
+
+model Booking {
+  id              String        @id @default(cuid())
+  salonId         String        // fix: 5.1 multi-tenancy
+  clientId        String
+  professionalId  String
+  serviceId       String
+  subscriptionId  String?
+  startsAt        DateTime
+  endsAt          DateTime
+  status          BookingStatus @default(CONFIRMED)
+  noShowFee       Decimal?      @db.Decimal(10, 2)  // fix: 1.8
+  cancelledAt     DateTime?
+  rescheduledFrom String?       // bookingId anterior — fix: 1.9
+  createdAt       DateTime      @default(now())
+
+  salon        Salon        @relation(fields: [salonId], references: [id])
+  client       Client       @relation(fields: [clientId], references: [id])
+  professional Professional @relation(fields: [professionalId], references: [id])
+  service      Service      @relation(fields: [serviceId], references: [id])
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+  charges      Charge[]
+
+  @@index([professionalId, startsAt, endsAt])
+  @@index([salonId, startsAt])
+  @@map("bookings")
+}
+
+enum BookingStatus {
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  PENDING_PAYMENT
+}
+
+// ─── CLIENTE ────────────────────────────────────────────────────────────────
+
+model Client {
+  id         String    @id @default(cuid())
+  salonId    String    // fix: 5.1 multi-tenancy
+  whatsappId String    // número E.164
+  name       String
+  cpf        String?   // fix: 5.2 — criptografar AES-256 antes de persistir
+  optedOut   Boolean   @default(false)  // fix: 4.5 LGPD opt-out
+  optedOutAt DateTime?
+  createdAt  DateTime  @default(now())
+  deletedAt  DateTime? // fix: 6.2 soft delete / anonimização
+
+  bookings      Booking[]
+  subscriptions Subscription[]
+  conversations ConversationMessage[]
+
+  @@unique([salonId, whatsappId])
+  @@map("clients")
+}
+
+// ─── PLANO & ASSINATURA ─────────────────────────────────────────────────────
+
+model Plan {
+  id              String   @id @default(cuid())
+  salonId         String
+  name            String
+  priceMonthly    Decimal  @db.Decimal(10, 2)
+  billingCycleDay Int      // dia do mês (1–28)
+  creditsPerCycle Int      // nº de serviços incluídos por ciclo
+  currency        String   @default("BRL")  // fix: 3.9 documentado
+  gatewayPlanId   String?  // ID do plano no gateway
+  active          Boolean  @default(true)
+  salon           Salon    @relation(fields: [salonId], references: [id])
+  subscriptions   Subscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id                String             @id @default(cuid())
+  salonId           String             // fix: 5.1
+  clientId          String
+  planId            String
+  status            SubscriptionStatus @default(ACTIVE)
+  gatewaySubId      String?            // ID da assinatura no gateway
+  currentCycleStart DateTime
+  currentCycleEnd   DateTime
+  creditsUsed       Int                @default(0)
+  creditsTotal      Int
+  createdAt         DateTime           @default(now())
+  cancelledAt       DateTime?
+  pastDueAt         DateTime?          // fix: 3.8 quando entrou em atraso
+
+  client   Client   @relation(fields: [clientId], references: [id])
+  plan     Plan     @relation(fields: [planId], references: [id])
+  bookings Booking[]
+  charges  Charge[]
+
+  @@map("subscriptions")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE    // fix: 3.8 bloqueio de agenda
+  SUSPENDED
+  CANCELLED
+  EXPIRED
+}
+
+// ─── COBRANÇA & SPLIT ───────────────────────────────────────────────────────
+
+model Charge {
+  id              String       @id @default(cuid())
+  salonId         String       // fix: 5.1
+  bookingId       String?
+  subscriptionId  String?
+  clientId        String
+  grossAmount     Decimal      @db.Decimal(10, 2)
+  netAmount       Decimal      @db.Decimal(10, 2)
+  currency        String       @default("BRL")
+  status          ChargeStatus @default(PENDING)
+  gatewayChargeId String?
+  paidAt          DateTime?
+  refundedAt      DateTime?    // fix: 3.5
+  refundedAmount  Decimal?     @db.Decimal(10, 2)  // fix: 3.5 reembolso parcial
+  splits          ChargeSplit[]
+  booking         Booking?     @relation(fields: [bookingId], references: [id])
+  subscription    Subscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@map("charges")
+}
+
+enum ChargeStatus {
+  PENDING
+  PAID
+  REFUNDED
+  PARTIALLY_REFUNDED // fix: 3.5
+  FAILED
+  CANCELLED
+}
+
+model ChargeSplit {
+  id                 String        @id @default(cuid())
+  chargeId           String
+  recipientType      RecipientType
+  recipientId        String        // professionalId | salonId | "platform"
+  gatewayRecipientId String        // walletId/sellerId no gateway
+  percentage         Decimal       @db.Decimal(5, 2)
+  amount             Decimal       @db.Decimal(10, 2)
+  status             SplitStatus   @default(PENDING)
+  reversedAt         DateTime?     // fix: 3.5 estorno de split
+  charge             Charge        @relation(fields: [chargeId], references: [id])
+
+  @@map("charge_splits")
+}
+
+enum RecipientType {
+  PROFESSIONAL
+  SALON
+  PLATFORM
+}
+
+enum SplitStatus {
+  PENDING
+  DONE
+  REFUNDED
+  FAILED
+}
+
+// ─── IDEMPOTÊNCIA DE WEBHOOKS ───────────────────────────────────────────────
+
+model WebhookEvent {
+  id          String   @id  // ID único do evento vindo do gateway/Meta
+  salonId     String?
+  source      String   // "ASAAS" | "META_WHATSAPP"
+  payload     Json
+  processedAt DateTime @default(now())
+  salon       Salon?   @relation(fields: [salonId], references: [id])
+
+  @@map("webhook_events")
+}
+
+// ─── CONVERSA / IA ──────────────────────────────────────────────────────────
+
+model ConversationMessage {
+  id        String   @id @default(cuid())
+  clientId  String
+  salonId   String
+  role      String   // "user" | "assistant" | "tool"
+  content   String
+  tokens    Int?     // fix: 2.4 controle de janela de contexto
+  createdAt DateTime @default(now())
+  expiresAt DateTime? // fix: 6.1 retenção com TTL
+
+  client Client @relation(fields: [clientId], references: [id])
+
+  @@index([clientId, createdAt])
+  @@map("conversation_messages")
+}
