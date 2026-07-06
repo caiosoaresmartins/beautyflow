@@ -6,7 +6,6 @@ import {
   Param,
   Body,
   Query,
-  Req,
   Res,
   HttpCode,
   HttpStatus,
@@ -15,8 +14,9 @@ import {
   DefaultValuePipe,
   Logger,
   Headers,
+  UnauthorizedException,
 } from '@nestjs/common';
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { BillingService, CreateChargeDto } from './billing.service';
@@ -78,15 +78,14 @@ export class BillingController {
   constructor(
     private readonly billing: BillingService,
     private readonly subscriptions: SubscriptionsService,
-    private readonly webhookHandler: BillingWebhookHandler,
   ) {}
 
   // ─── Cobranças ────────────────────────────────────────────────────────────
 
   @UseGuards(JwtAuthGuard)
   @Post('charges')
-  @ApiOperation({ summary: 'Cria cobrança com split automático' })
-  async createCharge(
+  @ApiOperation({ summary: 'Cria cobrança com split automático de comissão' })
+  createCharge(
     @Param('salonId') salonId: string,
     @Body() body: CreateChargeBodyDto,
   ) {
@@ -95,8 +94,8 @@ export class BillingController {
 
   @UseGuards(JwtAuthGuard)
   @Get('charges')
-  @ApiOperation({ summary: 'Lista cobranças do salão' })
-  async listCharges(
+  @ApiOperation({ summary: 'Lista cobranças do salão com paginação' })
+  listCharges(
     @Param('salonId') salonId: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
@@ -106,8 +105,8 @@ export class BillingController {
 
   @UseGuards(JwtAuthGuard)
   @Post('charges/:chargeId/sync')
-  @ApiOperation({ summary: 'Sincroniza status da cobrança com Asaas' })
-  async syncCharge(
+  @ApiOperation({ summary: 'Sincroniza status da cobrança com o Asaas' })
+  syncCharge(
     @Param('salonId') salonId: string,
     @Param('chargeId') chargeId: string,
   ) {
@@ -119,7 +118,7 @@ export class BillingController {
   @UseGuards(JwtAuthGuard)
   @Post('subscriptions')
   @ApiOperation({ summary: 'Cria assinatura recorrente (Clube da Barba)' })
-  async createSubscription(
+  createSubscription(
     @Param('salonId') salonId: string,
     @Body() body: CreateSubscriptionBodyDto,
   ) {
@@ -128,8 +127,8 @@ export class BillingController {
 
   @UseGuards(JwtAuthGuard)
   @Get('subscriptions')
-  @ApiOperation({ summary: 'Lista assinaturas do salão' })
-  async listSubscriptions(
+  @ApiOperation({ summary: 'Lista assinaturas do salão com paginação' })
+  listSubscriptions(
     @Param('salonId') salonId: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
@@ -140,35 +139,21 @@ export class BillingController {
   @UseGuards(JwtAuthGuard)
   @Delete('subscriptions/:subscriptionId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Cancela assinatura' })
-  async cancelSubscription(
+  @ApiOperation({ summary: 'Cancela assinatura (também cancela no Asaas)' })
+  cancelSubscription(
     @Param('salonId') salonId: string,
     @Param('subscriptionId') subscriptionId: string,
   ) {
     return this.subscriptions.cancelSubscription(subscriptionId, salonId);
   }
 
-  // ─── Webhook Asaas ────────────────────────────────────────────────────────
-
-  @Post('/../../webhook/asaas')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Webhook Asaas (validação por Bearer token)' })
-  async asaasWebhook(
-    @Headers('asaas-access-token') token: string,
-    @Body() body: any,
-    @Res() res: Response,
+  @UseGuards(JwtAuthGuard)
+  @Get('clients/:clientId/can-book')
+  @ApiOperation({ summary: 'Verifica se cliente pode agendar (verifica inadimplência)' })
+  canBook(
+    @Param('salonId') salonId: string,
+    @Param('clientId') clientId: string,
   ) {
-    if (!this.webhookHandler.validateToken(token)) {
-      this.logger.warn('Token inválido no webhook Asaas');
-      return res.status(401).send('Unauthorized');
-    }
-
-    // Responder imediatamente
-    res.status(200).send('OK');
-
-    // Processar de forma assíncrona
-    this.webhookHandler.handle(body).catch((err) =>
-      this.logger.error('Erro ao processar webhook Asaas', err),
-    );
+    return this.subscriptions.canBook(clientId, salonId);
   }
 }
