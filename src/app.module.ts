@@ -1,9 +1,6 @@
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD } from '@nestjs/core';
-import { AppController } from './app.controller';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { SalonsModule } from './salons/salons.module';
@@ -12,30 +9,17 @@ import { ServicesModule } from './services/services.module';
 import { ClientsModule } from './clients/clients.module';
 import { BookingsModule } from './bookings/bookings.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { WhatsAppModule } from './whatsapp/whatsapp.module';
+import { AiOrchestratorModule } from './ai-orchestrator/ai-orchestrator.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { RedisModule } from './common/redis/redis.module';
+import { TenantMiddleware } from './common/middleware/tenant.middleware';
 
 @Module({
   imports: [
-    // ─── Config global ────────────────────────────────────────────
-    ConfigModule.forRoot({
-      isGlobal: true,
-      envFilePath: '.env',
-    }),
-
-    // ─── Agendador de tarefas (cron jobs) ─────────────────────────
-    ScheduleModule.forRoot(),
-
-    // ─── Rate limiting global ──────────────────────────────────────
-    ThrottlerModule.forRootAsync({
-      useFactory: () => ([
-        {
-          ttl:   parseInt(process.env.THROTTLE_TTL   ?? '60000', 10),
-          limit: parseInt(process.env.THROTTLE_LIMIT ?? '100',   10),
-        },
-      ]),
-    }),
-
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
+    RedisModule,
     AuthModule,
     SalonsModule,
     ProfessionalsModule,
@@ -43,15 +27,18 @@ import { NotificationsModule } from './notifications/notifications.module';
     ClientsModule,
     BookingsModule,
     DashboardModule,
+    WhatsAppModule,
+    AiOrchestratorModule,
     NotificationsModule,
   ],
-  controllers: [AppController],
   providers: [
-    // ThrottlerGuard aplicado globalmente a TODOS os endpoints
-    {
-      provide: APP_GUARD,
-      useClass: ThrottlerGuard,
-    },
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(TenantMiddleware)
+      .forRoutes('*');
+  }
+}
