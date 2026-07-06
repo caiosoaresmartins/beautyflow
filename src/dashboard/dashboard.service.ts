@@ -1,8 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { BookingStatus } from '@prisma/client';
 
 @Injectable()
 export class DashboardService {
+  private readonly logger = new Logger(DashboardService.name);
+
   constructor(private prisma: PrismaService) {}
 
   async getStats(salonId: string) {
@@ -14,40 +17,46 @@ export class DashboardService {
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59, 999);
 
-    const [totalClients, totalProfessionals, totalServices, bookingsToday, bookingsMonth, upcomingBookings] =
-      await Promise.all([
-        this.prisma.client.count({ where: { salonId } }),
-        this.prisma.professional.count({ where: { salonId } }),
-        this.prisma.service.count({ where: { salonId } }),
-        this.prisma.booking.count({
-          where: {
-            salonId,
-            scheduledAt: { gte: today, lt: tomorrow },
-            status: { not: 'CANCELLED' },
-          },
-        }),
-        this.prisma.booking.count({
-          where: {
-            salonId,
-            scheduledAt: { gte: startOfMonth, lte: endOfMonth },
-            status: { not: 'CANCELLED' },
-          },
-        }),
-        this.prisma.booking.findMany({
-          where: {
-            salonId,
-            scheduledAt: { gte: new Date() },
-            status: { in: ['PENDING', 'CONFIRMED'] },
-          },
-          include: {
-            client: true,
-            service: true,
-            professional: { include: { user: { select: { name: true } } } },
-          },
-          orderBy: { scheduledAt: 'asc' },
-          take: 5,
-        }),
-      ]);
+    const [
+      totalClients,
+      totalProfessionals,
+      totalServices,
+      bookingsToday,
+      bookingsMonth,
+      upcomingBookings,
+    ] = await Promise.all([
+      this.prisma.client.count({ where: { salonId, deletedAt: null } }),
+      this.prisma.professional.count({ where: { salonId } }),
+      this.prisma.service.count({ where: { salonId, active: true } }),
+      this.prisma.booking.count({
+        where: {
+          salonId,
+          startsAt: { gte: today, lt: tomorrow },
+          status: { not: BookingStatus.CANCELLED },
+        },
+      }),
+      this.prisma.booking.count({
+        where: {
+          salonId,
+          startsAt: { gte: startOfMonth, lte: endOfMonth },
+          status: { not: BookingStatus.CANCELLED },
+        },
+      }),
+      this.prisma.booking.findMany({
+        where: {
+          salonId,
+          startsAt: { gte: new Date() },
+          status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS] },
+        },
+        include: {
+          client: true,
+          service: true,
+          professional: { select: { id: true, name: true } },
+        },
+        orderBy: { startsAt: 'asc' },
+        take: 5,
+      }),
+    ]);
 
     return {
       totalClients,
@@ -67,13 +76,21 @@ export class DashboardService {
     const completedBookings = await this.prisma.booking.findMany({
       where: {
         salonId,
-        status: 'COMPLETED',
-        scheduledAt: { gte: startOfMonth },
+        status: BookingStatus.COMPLETED,
+        startsAt: { gte: startOfMonth },
       },
       include: { service: true },
     });
 
-    const revenue = completedBookings.reduce((sum, b) => sum + (b.service?.price || 0), 0);
-    return { revenue, completedBookings: completedBookings.length };
+    // Decimal do Prisma não é número JS — converter com Number()
+    const revenue = completedBookings.reduce((sum, b) => {
+      const price = b.service?.priceDefault ? Number(b.service.priceDefault) : 0;
+      return sum + price;
+    }, 0);
+
+    return {
+      revenue: Math.round(revenue * 100) / 100,
+      completedBookings: completedBookings.length,
+    };
   }
 }

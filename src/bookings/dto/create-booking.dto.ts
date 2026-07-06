@@ -1,25 +1,25 @@
-import { IsString, IsOptional, IsUUID, IsDateString } from 'class-validator';
+import { IsString, IsOptional, IsDateString } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateBookingDto {
-  @ApiProperty()
-  @IsUUID()
+  @ApiProperty({ description: 'ID do cliente' })
+  @IsString()
   clientId: string;
 
-  @ApiProperty()
-  @IsUUID()
+  @ApiProperty({ description: 'ID do profissional' })
+  @IsString()
   professionalId: string;
 
-  @ApiProperty()
-  @IsUUID()
+  @ApiProperty({ description: 'ID do serviço' })
+  @IsString()
   serviceId: string;
 
-  @ApiProperty({ example: '2024-12-25T10:00:00.000Z' })
+  @ApiProperty({ example: '2024-12-25T10:00:00.000Z', description: 'Data e hora de início (ISO 8601 UTC)' })
   @IsDateString()
-  scheduledAt: string;
+  startsAt: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'ID da assinatura (se pagamento via plano)' })
   @IsOptional()
   @IsString()
-  notes?: string;
+  subscriptionId?: string;
 }

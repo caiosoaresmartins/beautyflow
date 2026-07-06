@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProfessionalDto } from './dto/create-professional.dto';
 import { UpdateProfessionalDto } from './dto/update-professional.dto';
+import * as bcrypt from 'bcryptjs';
 
 @Injectable()
 export class ProfessionalsService {
@@ -10,25 +11,49 @@ export class ProfessionalsService {
   async findAll(salonId: string) {
     return this.prisma.professional.findMany({
       where: { salonId },
-      include: { user: { select: { id: true, name: true, email: true, phone: true } } },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        bio: true,
+        role: true,
+        createdAt: true,
+      },
     });
   }
 
   async findOne(id: string, salonId: string) {
     const professional = await this.prisma.professional.findFirst({
       where: { id, salonId },
-      include: {
-        user: { select: { id: true, name: true, email: true, phone: true } },
-        services: true,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        bio: true,
+        role: true,
+        createdAt: true,
+        workingHours: true,
+        commissionRules: true,
       },
     });
-    if (!professional) throw new NotFoundException('Professional not found');
+    if (!professional) throw new NotFoundException('Profissional não encontrado');
     return professional;
   }
 
   async create(salonId: string, dto: CreateProfessionalDto) {
+    const existing = await this.prisma.professional.findUnique({
+      where: { email: dto.email },
+    });
+    if (existing) throw new ConflictException('E-mail já cadastrado');
+
+    const { password, ...rest } = dto;
+    const passwordHash = await bcrypt.hash(password, 12);
+
     return this.prisma.professional.create({
-      data: { ...dto, salonId },
+      data: { ...rest, passwordHash, salonId },
+      select: { id: true, name: true, email: true, phone: true, bio: true, role: true, createdAt: true },
     });
   }
 
@@ -37,6 +62,7 @@ export class ProfessionalsService {
     return this.prisma.professional.update({
       where: { id },
       data: dto,
+      select: { id: true, name: true, email: true, phone: true, bio: true, role: true },
     });
   }
 
@@ -54,11 +80,11 @@ export class ProfessionalsService {
     return this.prisma.booking.findMany({
       where: {
         professionalId,
-        scheduledAt: { gte: start, lte: end },
+        startsAt: { gte: start, lte: end },
         status: { not: 'CANCELLED' },
       },
       include: { service: true, client: true },
-      orderBy: { scheduledAt: 'asc' },
+      orderBy: { startsAt: 'asc' },
     });
   }
 }

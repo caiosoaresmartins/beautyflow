@@ -16,10 +16,13 @@ export class SalonsService {
       where: { id },
       include: {
         professionals: { select: { id: true, name: true, role: true } },
-        services: { select: { id: true, name: true, durationMin: true, price: true } },
+        services: {
+          where: { active: true },
+          select: { id: true, name: true, durationMinutes: true, priceDefault: true, category: true },
+        },
       },
     });
-    if (!salon) throw new NotFoundException('Salao nao encontrado');
+    if (!salon) throw new NotFoundException('Salão não encontrado');
     return salon;
   }
 
@@ -38,7 +41,7 @@ export class SalonsService {
       this.prisma.booking.count({
         where: { salonId, startsAt: { gte: today, lt: tomorrow } },
       }),
-      this.prisma.client.count({ where: { salonId } }),
+      this.prisma.client.count({ where: { salonId, deletedAt: null } }),
       this.prisma.booking.count({ where: { salonId } }),
     ]);
 
