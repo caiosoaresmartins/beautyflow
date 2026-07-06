@@ -45,15 +45,14 @@ export class BillingToolsService {
   /** Tool: get_payment_link — retorna link para regularizar inadimplência */
   async getPaymentLink(clientId: string, salonId: string): Promise<any> {
     const lastCharge = await this.prisma.charge.findFirst({
-      where: { clientId, salonId, status: { in: ['PENDING', 'OVERDUE'] } },
+      where: { clientId, salonId, status: { in: ['PENDING', 'FAILED'] } },
       orderBy: { createdAt: 'desc' },
     });
     if (!lastCharge) return { message: 'Nenhuma cobrança pendente encontrada' };
     return {
-      invoiceUrl: lastCharge.invoiceUrl,
-      pixCode: lastCharge.pixCode,
+      chargeId: lastCharge.id,
       amount: Number(lastCharge.amount),
-      dueDate: lastCharge.dueDate?.toISOString().split('T')[0],
+        status: lastCharge.status,
     };
   }
 
