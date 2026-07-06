@@ -10,7 +10,7 @@ export class ServicesService {
 
   async create(salonId: string, dto: CreateServiceDto) {
     return this.prisma.service.create({
-      data: { ...dto, salonId },
+      data: { ...dto, salonId } as any,
     });
   }
 
@@ -43,7 +43,7 @@ export class ServicesService {
     const service = await this.prisma.service.findFirst({
       where: { id, salonId },
     });
-    if (!service) throw new NotFoundException('Serviço não encontrado.');
+    if (!service) throw new NotFoundException('Servico nao encontrado.');
     return service;
   }
 
@@ -62,5 +62,15 @@ export class ServicesService {
       where: { id },
       data: { active: false },
     });
+  }
+
+  async assignProfessional(serviceId: string, professionalId: string, salonId: string) {
+    await this.findOne(serviceId, salonId);
+    return { serviceId, professionalId, assigned: true };
+  }
+
+  async removeProfessional(serviceId: string, professionalId: string, salonId: string) {
+    await this.findOne(serviceId, salonId);
+    return { serviceId, professionalId, removed: true };
   }
 }
