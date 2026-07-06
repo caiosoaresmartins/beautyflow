@@ -1,0 +1,21 @@
+name: Deploy → Render
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy to Render
+    runs-on: ubuntu-latest
+    needs: []  # rode independente (Render faz seu próprio build)
+
+    steps:
+      - name: Trigger Render Deploy Hook
+        run: |
+          curl -s -X POST "$RENDER_DEPLOY_HOOK" \
+            -H 'Content-Type: application/json' \
+            --fail --show-error
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+          # Obtenha em: Render Dashboard → seu serviço → Settings → Deploy Hook

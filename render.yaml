@@ -1,0 +1,50 @@
+# Render Blueprint — deploy declarativo
+# Documentacão: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: beautyflow-api
+    env: node
+    region: oregon           # mudar para ohio (us-east) se latência para BR for relevante
+    plan: free               # Free: 750h/mês, sleep após 15min inativo
+    buildCommand: npm ci && npx prisma generate && npm run build
+    startCommand: npm run db:migrate && node dist/main
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false          # definir manualmente no painel Render
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true  # Render gera automaticamente
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 30d
+      - key: ALLOWED_ORIGINS
+        sync: false          # ex: https://app.beautyflow.com.br
+      - key: THROTTLE_TTL
+        value: '60000'
+      - key: THROTTLE_LIMIT
+        value: '100'
+      - key: SWAGGER_ENABLED
+        value: 'false'       # desabilitar em produção por padrão
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: META_PHONE_NUMBER_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_VERIFY_TOKEN
+        sync: false
+      - key: ASAAS_API_KEY
+        sync: false
+      - key: ASAAS_WEBHOOK_TOKEN
+        sync: false
+      - key: ASAAS_ENVIRONMENT
+        value: production
+      - key: CPF_ENCRYPTION_KEY
+        sync: false
