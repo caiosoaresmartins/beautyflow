@@ -1,46 +1,46 @@
-# ───────────────────────────────────────────────────────────
-# Stage 1 — build
-# ───────────────────────────────────────────────────────────
+# ─── Stage 1: Build ────────────────────────────────────────────────────────────
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copia apenas manifests primeiro (cache de camadas)
+# Dependências
 COPY package*.json ./
-COPY prisma ./prisma/
-
 RUN npm ci --ignore-scripts
 
-# Gera Prisma Client
+# Prisma
+COPY prisma ./prisma/
 RUN npx prisma generate
 
-# Copia código e compila
+# Código fonte
 COPY . .
 RUN npm run build
 
-# ───────────────────────────────────────────────────────────
-# Stage 2 — runner (imagem final mínima)
-# ───────────────────────────────────────────────────────────
+# ─── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM node:20-alpine AS runner
-
-# Usuário não-root por segurança
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
-# Só dependências de produção
+ENV NODE_ENV=production
+
+# Apenas produção
 COPY package*.json ./
-COPY prisma ./prisma/
-RUN npm ci --omit=dev --ignore-scripts && npx prisma generate
+RUN npm ci --only=production --ignore-scripts
 
-# Artefatos compilados do stage anterior
+# Prisma gerado
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+
+# Build artefatos
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/prisma ./prisma
 
-# Permissões
-RUN chown -R appuser:appgroup /app
-USER appuser
+# Não rodar como root
+RUN addgroup -S beautyflow && adduser -S beautyflow -G beautyflow
+USER beautyflow
 
 EXPOSE 3000
 
-# Roda migrations e inicia (migrations idempotentes com prisma migrate deploy)
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+  CMD wget -qO- http://localhost:3000/api/v1/health || exit 1
+
+CMD ["node", "dist/main"]

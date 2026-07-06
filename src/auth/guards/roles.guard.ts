@@ -1,6 +1,6 @@
 import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { ROLES_KEY } from './roles.decorator';
+import { ROLES_KEY } from '../decorators/roles.decorator';
 import { ProfessionalRole } from '@prisma/client';
 
 @Injectable()
@@ -13,16 +13,15 @@ export class RolesGuard implements CanActivate {
       context.getClass(),
     ]);
 
-    // Se nenhum @Roles() definido, apenas autenticação é necessária
+    // Sem @Roles() decorator — acesso livre (mas ainda exige JWT)
     if (!requiredRoles || requiredRoles.length === 0) return true;
 
     const { user } = context.switchToHttp().getRequest();
-    if (!user) throw new ForbiddenException('Sem permissão');
+    if (!user?.role) throw new ForbiddenException('Sem permissão para acessar este recurso.');
 
-    const hasRole = requiredRoles.includes(user.role as ProfessionalRole);
-    if (!hasRole) {
+    if (!requiredRoles.includes(user.role)) {
       throw new ForbiddenException(
-        `Acesso negado. Role necessário: ${requiredRoles.join(' ou ')}. Seu role: ${user.role}`,
+        `Requer perfil: ${requiredRoles.join(' ou ')}. Seu perfil: ${user.role}.`,
       );
     }
     return true;
