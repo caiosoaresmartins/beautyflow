@@ -60,7 +60,8 @@ export class WhatsAppWebhookHandler {
       where: { metaPhoneNumberId: phoneNumberId },
     });
     if (!salon) {
-      this.logger.warn(`Salonão encontrado para phoneNumberId: ${phoneNumberId}`);
+      // fix: typo corrigido 'Salonão' → 'Salão'
+      this.logger.warn(`Salão não encontrado para phoneNumberId: ${phoneNumberId}`);
       return;
     }
 
@@ -102,14 +103,15 @@ export class WhatsAppWebhookHandler {
         this.logger.error('Erro ao transcrever áudio', err);
         await this.whatsapp.sendText({
           to: fromNumber,
+          phoneNumberId,
           text: 'Desculpe, não consegui processar o áudio. Pode digitar sua mensagem?',
         });
         return;
       }
     } else {
-      // Tipo não suportado
       await this.whatsapp.sendText({
         to: fromNumber,
+        phoneNumberId,
         text: 'Por enquanto só consigo processar mensagens de texto e áudio 😊',
       });
       return;
@@ -127,7 +129,7 @@ export class WhatsAppWebhookHandler {
     });
 
     // Marcar como lida
-    await this.whatsapp.markAsRead(messageId);
+    await this.whatsapp.markAsRead(messageId, phoneNumberId);
 
     // Delegar ao AI Orchestrator
     const reply = await this.ai.orchestrate({
@@ -151,11 +153,12 @@ export class WhatsAppWebhookHandler {
 
     // Enviar resposta
     if (inWindow) {
-      await this.whatsapp.sendText({ to: fromNumber, text: reply });
+      await this.whatsapp.sendText({ to: fromNumber, phoneNumberId, text: reply });
     } else {
       // Fora da janela 24h — usar template aprovado
       await this.whatsapp.sendTemplate({
         to: fromNumber,
+        phoneNumberId,
         templateName: 'ai_response',
         languageCode: 'pt_BR',
         components: [
