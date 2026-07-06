@@ -1,96 +1,90 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { BookingStatus } from '@prisma/client';
+import { toNumber } from '../common/helpers/decimal.helper';
 
 @Injectable()
 export class DashboardService {
-  private readonly logger = new Logger(DashboardService.name);
-
   constructor(private prisma: PrismaService) {}
 
-  async getStats(salonId: string) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+  async getStats(salonId: string, period: 'day' | 'week' | 'month' = 'month') {
+    const now = new Date();
+    const start = new Date(now);
 
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59, 999);
+    if (period === 'day') {
+      start.setHours(0, 0, 0, 0);
+    } else if (period === 'week') {
+      start.setDate(start.getDate() - 7);
+      start.setHours(0, 0, 0, 0);
+    } else {
+      start.setDate(1);
+      start.setHours(0, 0, 0, 0);
+    }
 
-    const [
-      totalClients,
-      totalProfessionals,
-      totalServices,
-      bookingsToday,
-      bookingsMonth,
-      upcomingBookings,
-    ] = await Promise.all([
-      this.prisma.client.count({ where: { salonId, deletedAt: null } }),
-      this.prisma.professional.count({ where: { salonId } }),
-      this.prisma.service.count({ where: { salonId, active: true } }),
-      this.prisma.booking.count({
-        where: {
-          salonId,
-          startsAt: { gte: today, lt: tomorrow },
-          status: { not: BookingStatus.CANCELLED },
-        },
-      }),
-      this.prisma.booking.count({
-        where: {
-          salonId,
-          startsAt: { gte: startOfMonth, lte: endOfMonth },
-          status: { not: BookingStatus.CANCELLED },
-        },
-      }),
-      this.prisma.booking.findMany({
-        where: {
-          salonId,
-          startsAt: { gte: new Date() },
-          status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS] },
-        },
-        include: {
-          client: true,
-          service: true,
-          professional: { select: { id: true, name: true } },
-        },
-        orderBy: { startsAt: 'asc' },
-        take: 5,
-      }),
-    ]);
+    const [completedBookings, pendingBookings, cancelledBookings, newClients, totalProfessionals] =
+      await Promise.all([
+        this.prisma.booking.findMany({
+          where: { salonId, status: 'COMPLETED', startsAt: { gte: start }, deletedAt: null },
+          include: { service: { select: { priceDefault: true } } },
+        }),
+        this.prisma.booking.count({
+          where: { salonId, status: 'PENDING', startsAt: { gte: start }, deletedAt: null },
+        }),
+        this.prisma.booking.count({
+          where: { salonId, status: 'CANCELLED', startsAt: { gte: start } },
+        }),
+        this.prisma.client.count({
+          where: { salonId, createdAt: { gte: start }, deletedAt: null },
+        }),
+        this.prisma.professional.count({ where: { salonId } }),
+      ]);
+
+    const revenue = completedBookings.reduce((sum, b) => {
+      return sum + toNumber(b.service?.priceDefault);
+    }, 0);
+
+    const completionRate =
+      completedBookings.length + pendingBookings + cancelledBookings > 0
+        ? (completedBookings.length / (completedBookings.length + pendingBookings + cancelledBookings)) * 100
+        : 0;
 
     return {
-      totalClients,
+      period,
+      revenue: Number(revenue.toFixed(2)),
+      completedBookings: completedBookings.length,
+      pendingBookings,
+      cancelledBookings,
+      newClients,
       totalProfessionals,
-      totalServices,
-      bookingsToday,
-      bookingsMonth,
-      upcomingBookings,
+      completionRate: Number(completionRate.toFixed(1)),
     };
   }
 
-  async getRevenueStats(salonId: string) {
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
+  async getRevenueChart(salonId: string, days = 30) {
+    const start = new Date();
+    start.setDate(start.getDate() - days);
+    start.setHours(0, 0, 0, 0);
 
-    const completedBookings = await this.prisma.booking.findMany({
+    const bookings = await this.prisma.booking.findMany({
       where: {
         salonId,
-        status: BookingStatus.COMPLETED,
-        startsAt: { gte: startOfMonth },
+        status: 'COMPLETED',
+        startsAt: { gte: start },
+        deletedAt: null,
       },
-      include: { service: true },
+      select: {
+        startsAt: true,
+        service: { select: { priceDefault: true } },
+      },
+      orderBy: { startsAt: 'asc' },
     });
 
-    // Decimal do Prisma não é número JS — converter com Number()
-    const revenue = completedBookings.reduce((sum, b) => {
-      const price = b.service?.priceDefault ? Number(b.service.priceDefault) : 0;
-      return sum + price;
-    }, 0);
+    // Agrupa por dia
+    const map = new Map<string, number>();
+    for (const b of bookings) {
+      const key = b.startsAt.toISOString().slice(0, 10);
+      map.set(key, (map.get(key) ?? 0) + toNumber(b.service?.priceDefault));
+    }
 
-    return {
-      revenue: Math.round(revenue * 100) / 100,
-      completedBookings: completedBookings.length,
-    };
+    return Array.from(map.entries()).map(([date, revenue]) => ({ date, revenue }));
   }
 }

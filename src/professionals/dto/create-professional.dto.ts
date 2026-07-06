@@ -1,27 +1,27 @@
-import { IsString, IsEmail, IsOptional, MinLength, IsEnum } from 'class-validator';
+import { IsEmail, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ProfessionalRole } from '@prisma/client';
 
 export class CreateProfessionalDto {
-  @ApiProperty({ example: 'João Silva' })
+  @ApiProperty({ example: 'Ana Souza' })
   @IsString()
   name: string;
 
-  @ApiProperty({ example: 'joao@barbearia.com' })
+  @ApiProperty({ example: 'ana@beautyflow.com' })
   @IsEmail()
   email: string;
 
-  @ApiProperty({ example: 'senha123', minLength: 6 })
+  @ApiProperty({ example: 'Senha@123', minLength: 8 })
   @IsString()
-  @MinLength(6)
+  @MinLength(8)
   password: string;
 
-  @ApiPropertyOptional({ example: '+5511999999999' })
+  @ApiPropertyOptional({ example: '+5511999990000' })
   @IsOptional()
   @IsString()
   phone?: string;
 
-  @ApiPropertyOptional({ example: 'Especialista em cortes degradê' })
+  @ApiPropertyOptional({ example: 'Especialista em coloração' })
   @IsOptional()
   @IsString()
   bio?: string;
@@ -29,5 +29,5 @@ export class CreateProfessionalDto {
   @ApiPropertyOptional({ enum: ProfessionalRole, default: ProfessionalRole.PROFESSIONAL })
   @IsOptional()
   @IsEnum(ProfessionalRole)
-  role?: ProfessionalRole;
+  role?: ProfessionalRole = ProfessionalRole.PROFESSIONAL;
 }
