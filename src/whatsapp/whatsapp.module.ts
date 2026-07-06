@@ -1,21 +1,23 @@
 import { Module } from '@nestjs/common';
-import { HttpModule } from '@nestjs/axios';
 import { WhatsAppController } from './whatsapp.controller';
 import { WhatsAppService } from './whatsapp.service';
-import { WhatsAppWebhookHandler } from './webhook.handler';
+import { WebhookHandler } from './webhook.handler';
 import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module';
 import { PrismaModule } from '../prisma/prisma.module';
-import { RedisModule } from '../common/redis/redis.module';
+import { ClientsModule } from '../clients/clients.module';
+import { BookingsModule } from '../bookings/bookings.module';
+import { AvailabilityModule } from '../common/availability/availability.module';
 
 @Module({
   imports: [
     PrismaModule,
-    RedisModule,
-    AiOrchestratorModule,   // fix: handler depende de AiOrchestratorService
-    HttpModule.register({ timeout: 10_000, maxRedirects: 3 }),
+    AiOrchestratorModule,
+    ClientsModule,
+    BookingsModule,
+    AvailabilityModule,
   ],
   controllers: [WhatsAppController],
-  providers: [WhatsAppService, WhatsAppWebhookHandler],
+  providers: [WhatsAppService, WebhookHandler],
   exports: [WhatsAppService],
 })
 export class WhatsAppModule {}

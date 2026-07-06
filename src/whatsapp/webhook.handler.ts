@@ -1,170 +1,115 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { WhatsAppService } from './whatsapp.service';
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
-import { RedisService } from '../common/redis/redis.service';
+import { WhatsAppService } from './whatsapp.service';
+import { Redis } from 'ioredis';
+import { REDIS_CLIENT } from '../redis/redis.module';
 
 @Injectable()
-export class WhatsAppWebhookHandler {
-  private readonly logger = new Logger(WhatsAppWebhookHandler.name);
-  // Janela Meta: 24 horas em segundos
-  private readonly META_WINDOW_SECONDS = 24 * 60 * 60;
+export class WebhookHandler {
+  private readonly logger = new Logger(WebhookHandler.name);
 
   constructor(
-    private readonly prisma: PrismaService,
-    private readonly whatsapp: WhatsAppService,
-    private readonly ai: AiOrchestratorService,
-    private readonly redis: RedisService,
+    private prisma: PrismaService,
+    private ai: AiOrchestratorService,
+    private whatsapp: WhatsAppService,
+    @Inject(REDIS_CLIENT) private redis: Redis,
   ) {}
 
-  async handle(payload: any): Promise<void> {
-    const entries: any[] = payload?.entry ?? [];
-    for (const entry of entries) {
-      for (const change of entry.changes ?? []) {
-        if (change.field !== 'messages') continue;
-        const value = change.value;
-        for (const message of value?.messages ?? []) {
-          await this.processMessage(message, value);
-        }
-      }
-    }
-  }
+  async handle(body: any): Promise<void> {
+    const entry = body?.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
 
-  private async processMessage(message: any, value: any): Promise<void> {
-    const messageId: string = message.id;
-    const fromNumber: string = message.from; // E.164 sem +
-    const phoneNumberId: string = value?.metadata?.phone_number_id;
+    if (!value?.messages?.length) return;
 
-    // Deduplicação Redis SET NX (idempotência)
-    const dedupKey = `whatsapp:msg:${messageId}`;
-    const isNew = await this.redis.setNx(dedupKey, '1', this.META_WINDOW_SECONDS * 2);
-    if (!isNew) {
-      this.logger.warn(`Mensagem duplicada ignorada: ${messageId}`);
+    const message = value.messages[0];
+    const from = message.from as string;
+    const messageId = message.id as string;
+    const phoneNumberId = value?.metadata?.phone_number_id as string;
+
+    // Deduplicação via Redis — TTL 24h
+    const dedupKey = `wa:msg:${messageId}`;
+    const already = await this.redis.set(dedupKey, '1', 'EX', 86400, 'NX');
+    if (!already) {
+      this.logger.debug(`Mensagem duplicada ignorada: ${messageId}`);
       return;
     }
 
-    // Persistir evento de webhook
-    await this.prisma.webhookEvent.upsert({
-      where: { externalId: messageId },
-      create: {
-        source: 'META',
-        externalId: messageId,
-        payload: message,
-        processedAt: new Date(),
-      },
-      update: { processedAt: new Date() },
-    });
+    // Marcar como lido
+    await this.whatsapp.markAsRead(messageId);
 
-    // Identificar salonId pelo phoneNumberId
+    // Resolver salão pelo phoneNumberId
     const salon = await this.prisma.salon.findFirst({
-      where: { metaPhoneNumberId: phoneNumberId },
+      where: { whatsappPhoneNumberId: phoneNumberId },
     });
     if (!salon) {
-      // fix: typo corrigido 'Salonão' → 'Salão'
       this.logger.warn(`Salão não encontrado para phoneNumberId: ${phoneNumberId}`);
       return;
     }
 
-    // Buscar ou criar cliente
+    // Resolver ou criar cliente
     let client = await this.prisma.client.findFirst({
-      where: { salonId: salon.id, whatsappId: fromNumber, deletedAt: null },
+      where: { whatsappId: from, salonId: salon.id, deletedAt: null },
     });
     if (!client) {
+      const contact = value?.contacts?.[0];
       client = await this.prisma.client.create({
         data: {
           salonId: salon.id,
-          whatsappId: fromNumber,
-          name: value?.contacts?.[0]?.profile?.name ?? fromNumber,
+          whatsappId: from,
+          name: contact?.profile?.name ?? from,
         },
       });
     }
 
-    // Ignorar clientes que fizeram opt-out
     if (client.optedOut) {
-      this.logger.log(`Cliente ${fromNumber} optedOut — mensagem ignorada`);
+      this.logger.log(`Cliente ${from} optou por não receber mensagens.`);
       return;
     }
-
-    // Verificar janela 24h (Meta exige template fora da janela)
-    const windowKey = `whatsapp:window:${fromNumber}`;
-    const inWindow = await this.redis.get(windowKey);
-    // Renovar janela a cada mensagem recebida do cliente
-    await this.redis.set(windowKey, '1', this.META_WINDOW_SECONDS);
 
     // Extrair texto ou áudio
-    let userText = '';
+    let userMessage = '';
     if (message.type === 'text') {
-      userText = message.text?.body ?? '';
+      userMessage = message.text?.body ?? '';
     } else if (message.type === 'audio') {
-      try {
-        const audioBuffer = await this.whatsapp.downloadMedia(message.audio.id);
-        userText = await this.ai.transcribeAudio(audioBuffer);
-      } catch (err) {
-        this.logger.error('Erro ao transcrever áudio', err);
-        await this.whatsapp.sendText({
-          to: fromNumber,
-          phoneNumberId,
-          text: 'Desculpe, não consegui processar o áudio. Pode digitar sua mensagem?',
-        });
-        return;
-      }
+      userMessage = await this.ai.transcribeAudio(message.audio?.id ?? '');
     } else {
-      await this.whatsapp.sendText({
-        to: fromNumber,
-        phoneNumberId,
-        text: 'Por enquanto só consigo processar mensagens de texto e áudio 😊',
-      });
+      await this.whatsapp.sendText(from, 'Desculpe, só consigo processar mensagens de texto ou áudio 😊');
       return;
     }
 
-    // Persistir mensagem do cliente
+    // Salvar mensagem no histórico
     await this.prisma.conversationMessage.create({
       data: {
         clientId: client.id,
         salonId: salon.id,
         role: 'user',
-        content: userText,
-        expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 dias LGPD
+        content: userMessage,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 dias
       },
     });
 
-    // Marcar como lida
-    await this.whatsapp.markAsRead(messageId, phoneNumberId);
-
-    // Delegar ao AI Orchestrator
-    const reply = await this.ai.orchestrate({
+    // Processar com IA
+    const reply = await this.ai.process({
       salonId: salon.id,
       clientId: client.id,
-      clientPhone: fromNumber,
-      userMessage: userText,
-      inWindow: !!inWindow,
+      clientName: client.name,
+      whatsappId: from,
+      message: userMessage,
     });
 
-    // Persistir resposta da IA
+    // Salvar resposta da IA
     await this.prisma.conversationMessage.create({
       data: {
         clientId: client.id,
         salonId: salon.id,
         role: 'assistant',
         content: reply,
-        expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
 
-    // Enviar resposta
-    if (inWindow) {
-      await this.whatsapp.sendText({ to: fromNumber, phoneNumberId, text: reply });
-    } else {
-      // Fora da janela 24h — usar template aprovado
-      await this.whatsapp.sendTemplate({
-        to: fromNumber,
-        phoneNumberId,
-        templateName: 'ai_response',
-        languageCode: 'pt_BR',
-        components: [
-          { type: 'body', parameters: [{ type: 'text', text: reply }] },
-        ],
-      });
-    }
+    await this.whatsapp.sendText(from, reply);
   }
 }

@@ -1,180 +1,191 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { AsaasService, AsaasSplitItem } from './asaas.service';
-import { addDays, format } from 'date-fns';
-import { Decimal } from '@prisma/client/runtime/library';
-
-export interface CreateChargeDto {
-  salonId: string;
-  clientId: string;
-  bookingId?: string;
-  value: number;
-  billingType: 'PIX' | 'CREDIT_CARD' | 'BOLETO';
-  description?: string;
-  dueDate?: string; // YYYY-MM-DD, default: hoje + 1 dia
-}
-
-export interface CreateSubscriptionDto {
-  salonId: string;
-  clientId: string;
-  planId: string;
-  billingType: 'PIX' | 'CREDIT_CARD' | 'BOLETO';
-}
+import { AsaasService } from './asaas.service';
+import { toNumber } from '../common/helpers/decimal.helper';
 
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
 
   constructor(
-    private readonly prisma: PrismaService,
-    private readonly asaas: AsaasService,
+    private prisma: PrismaService,
+    private asaas: AsaasService,
   ) {}
 
-  /** Cria cobrança avulsa com split automático por CommissionRule */
-  async createCharge(dto: CreateChargeDto): Promise<any> {
-    const client = await this.prisma.client.findFirst({
-      where: { id: dto.clientId, salonId: dto.salonId, deletedAt: null },
-    });
-    if (!client) throw new NotFoundException('Cliente não encontrado');
+  /** Cria assinatura recorrente para o cliente (ex: Clube da Barba) */
+  async createSubscription(salonId: string, clientId: string, planId: string) {
+    const plan = await this.prisma.plan.findFirstOrThrow({ where: { id: planId, salonId } });
 
-    // Garantir cliente no Asaas
-    const asaasCustomerId = await this.asaas.upsertCustomer({
-      name: client.name,
-      cpfCnpj: client.cpf ?? undefined,
-      email: client.email ?? undefined,
-      phone: client.phone ?? undefined,
-      externalReference: client.id,
+    const existing = await this.prisma.subscription.findFirst({
+      where: { clientId, planId, status: { in: ['ACTIVE', 'PENDING'] } },
     });
+    if (existing) throw new ConflictException('Cliente já possui assinatura ativa neste plano.');
 
-    // Calcular split se vier de um booking com serviço
-    const split: AsaasSplitItem[] = [];
-    if (dto.bookingId) {
-      const booking = await this.prisma.booking.findFirst({
-        where: { id: dto.bookingId, salonId: dto.salonId },
-        include: {
-          service: { include: { commissionRules: true } },
-          professional: true,
-        },
+    const client = await this.prisma.client.findFirstOrThrow({ where: { id: clientId, salonId, deletedAt: null } });
+
+    // Criar ou recuperar customer no Asaas
+    let gatewayCustomerId = (client as any).gatewayCustomerId as string | undefined;
+    if (!gatewayCustomerId) {
+      const customer = await this.asaas.createCustomer({
+        name: client.name,
+        email: client.email ?? undefined,
+        phone: client.phone ?? undefined,
+        cpfCnpj: client.cpf ?? undefined,
       });
-      if (booking) {
-        for (const rule of booking.service.commissionRules) {
-          // Só splitar para o profissional do booking
-          if (rule.professionalId !== booking.professionalId) continue;
-          const prof = booking.professional;
-          if (!prof.gatewayRecipientId) continue;
-
-          if (rule.type === 'PERCENTAGE') {
-            split.push({
-              walletId: prof.gatewayRecipientId,
-              percentualValue: Number(rule.value),
-            });
-          } else {
-            split.push({
-              walletId: prof.gatewayRecipientId,
-              fixedValue: Number(rule.value as Decimal),
-            });
-          }
-        }
-      }
+      gatewayCustomerId = customer.id;
+      await this.prisma.client.update({ where: { id: clientId }, data: { gatewayCustomerId } as any });
     }
 
-    const dueDate = dto.dueDate ?? format(addDays(new Date(), 1), 'yyyy-MM-dd');
+    const nextDueDate = new Date();
+    nextDueDate.setDate(nextDueDate.getDate() + 1);
+    const dueDateStr = nextDueDate.toISOString().slice(0, 10);
 
-    const result = await this.asaas.createCharge({
-      customerId: asaasCustomerId,
-      billingType: dto.billingType,
-      value: dto.value,
-      dueDate,
-      description: dto.description,
-      externalReference: dto.bookingId ?? dto.clientId,
-      split: split.length > 0 ? split : undefined,
+    const gwSubscription = await this.asaas.createSubscription({
+      customer: gatewayCustomerId,
+      billingType: 'PIX',
+      value: toNumber(plan.price),
+      nextDueDate: dueDateStr,
+      cycle: 'MONTHLY',
+      description: plan.name,
+      externalReference: `${salonId}:${clientId}:${planId}`,
     });
 
-    // Persistir Charge no banco
-    const charge = await this.prisma.charge.create({
+    const subscription = await this.prisma.subscription.create({
       data: {
-        salonId: dto.salonId,
-        clientId: dto.clientId,
-        bookingId: dto.bookingId,
-        externalId: result.chargeId,
-        amount: dto.value,
-        status: result.status as any,
-        billingType: dto.billingType,
-        dueDate: new Date(dueDate),
-        invoiceUrl: result.invoiceUrl,
-        pixCode: result.pixCode,
+        salonId,
+        clientId,
+        planId,
+        status: 'PENDING',
+        gatewaySubscriptionId: gwSubscription.id,
+        currentPeriodStart: new Date(),
+        currentPeriodEnd: nextDueDate,
       },
     });
 
-    // Persistir splits
-    if (split.length > 0 && dto.bookingId) {
-      const booking = await this.prisma.booking.findUnique({
-        where: { id: dto.bookingId },
-        include: { professional: true },
-      });
-      if (booking) {
-        for (const s of split) {
-          await this.prisma.chargeSplit.create({
-            data: {
-              chargeId: charge.id,
-              recipientType: 'PROFESSIONAL',
-              walletId: s.walletId,
-              fixedValue: s.fixedValue ? new Decimal(s.fixedValue) : null,
-              percentualValue: s.percentualValue ? new Decimal(s.percentualValue) : null,
-              status: 'PENDING',
-            },
-          });
-        }
-      }
+    return subscription;
+  }
+
+  /** Processa webhook do Asaas com idempotência */
+  async handleAsaasWebhook(event: any, idempotencyKey: string): Promise<void> {
+    // Verificar se já processamos este evento
+    const existing = await this.prisma.webhookEvent.findFirst({
+      where: { gatewayEventId: idempotencyKey },
+    });
+    if (existing) {
+      this.logger.debug(`Webhook ${idempotencyKey} já processado — ignorando.`);
+      return;
     }
 
-    return {
-      chargeId: charge.id,
-      externalId: result.chargeId,
-      invoiceUrl: result.invoiceUrl,
-      pixCode: result.pixCode,
-      status: result.status,
-    };
+    // Salvar evento
+    await this.prisma.webhookEvent.create({
+      data: {
+        gatewayEventId: idempotencyKey,
+        type: event.event,
+        payload: JSON.stringify(event),
+        processedAt: new Date(),
+      },
+    });
+
+    const eventType = event.event as string;
+    const payment = event.payment;
+
+    if (eventType === 'PAYMENT_RECEIVED' || eventType === 'PAYMENT_CONFIRMED') {
+      await this.handlePaymentReceived(payment);
+    } else if (eventType === 'PAYMENT_OVERDUE') {
+      await this.handlePaymentOverdue(payment);
+    } else if (eventType === 'PAYMENT_DELETED' || eventType === 'PAYMENT_REFUNDED') {
+      await this.handlePaymentCancelled(payment);
+    }
   }
 
-  /** Lista cobranças de um salão com paginação */
-  async listCharges(
-    salonId: string,
-    page = 1,
-    limit = 20,
-  ): Promise<{ data: any[]; total: number; page: number; lastPage: number }> {
-    const skip = (page - 1) * limit;
-    const [data, total] = await this.prisma.$transaction([
-      this.prisma.charge.findMany({
-        where: { salonId },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-        include: {
-          client: { select: { name: true } },
-          booking: { select: { startsAt: true } },
-        },
-      }),
-      this.prisma.charge.count({ where: { salonId } }),
-    ]);
-    return { data, total, page, lastPage: Math.ceil(total / limit) };
+  private async handlePaymentReceived(payment: any) {
+    const externalRef = payment?.externalReference as string | undefined;
+    if (!externalRef) return;
+
+    // externalReference: "salonId:clientId:planId"
+    const parts = externalRef.split(':');
+    if (parts.length < 3) return;
+    const [, clientId, planId] = parts;
+
+    await this.prisma.subscription.updateMany({
+      where: { clientId, planId, status: { in: ['PENDING', 'PAST_DUE'] } },
+      data: {
+        status: 'ACTIVE',
+        currentPeriodStart: new Date(),
+        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    // Criar registro de charge
+    await this.prisma.charge.create({
+      data: {
+        gatewayChargeId: payment.id,
+        salonId: parts[0],
+        clientId,
+        amount: payment.value,
+        status: 'CONFIRMED',
+        paidAt: new Date(),
+      } as any,
+    });
+
+    this.logger.log(`Pagamento confirmado para cliente ${clientId}.`);
   }
 
-  /** Busca status atualizado de uma cobrança */
-  async syncChargeStatus(chargeId: string, salonId: string): Promise<any> {
-    const charge = await this.prisma.charge.findFirst({
-      where: { id: chargeId, salonId },
+  private async handlePaymentOverdue(payment: any) {
+    const externalRef = payment?.externalReference as string | undefined;
+    if (!externalRef) return;
+    const [, clientId, planId] = externalRef.split(':');
+
+    await this.prisma.subscription.updateMany({
+      where: { clientId, planId, status: 'ACTIVE' },
+      data: { status: 'PAST_DUE' },
     });
-    if (!charge) throw new NotFoundException('Cobrança não encontrada');
-    const status = await this.asaas.getChargeStatus(charge.externalId);
-    return this.prisma.charge.update({
-      where: { id: chargeId },
-      data: { status: status as any },
+    this.logger.warn(`Assinatura marcada como PAST_DUE para cliente ${clientId}.`);
+  }
+
+  private async handlePaymentCancelled(payment: any) {
+    const externalRef = payment?.externalReference as string | undefined;
+    if (!externalRef) return;
+    const [, clientId, planId] = externalRef.split(':');
+
+    await this.prisma.subscription.updateMany({
+      where: { clientId, planId },
+      data: { status: 'CANCELLED' },
     });
+  }
+
+  /** Verifica se cliente pode agendar (assinatura ativa ou pagamento avulso) */
+  async canClientBook(clientId: string, salonId: string): Promise<boolean> {
+    const blocked = await this.prisma.subscription.findFirst({
+      where: { clientId, salonId, status: 'PAST_DUE' },
+    });
+    return !blocked;
+  }
+
+  /** Calcula e registra split de comissão */
+  async processSplit(bookingId: string): Promise<void> {
+    const booking = await this.prisma.booking.findFirstOrThrow({
+      where: { id: bookingId },
+      include: {
+        service: { include: { commissionRules: true } },
+        professional: true,
+      },
+    });
+
+    for (const rule of booking.service?.commissionRules ?? []) {
+      if (rule.professionalId !== booking.professionalId) continue;
+      const amount = toNumber(booking.service?.priceDefault) * (rule.percentage / 100);
+
+      await this.prisma.chargeSplit.create({
+        data: {
+          bookingId,
+          recipientId: booking.professionalId,
+          recipientType: 'PROFESSIONAL',
+          amount,
+          percentage: rule.percentage,
+          status: 'PENDING',
+        } as any,
+      });
+    }
   }
 }
