@@ -11,6 +11,7 @@ import { BookingsModule } from './bookings/bookings.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { AiOrchestratorModule } from './ai-orchestrator/ai-orchestrator.module';
+import { BillingModule } from './billing/billing.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RedisModule } from './common/redis/redis.module';
 import { TenantMiddleware } from './common/middleware/tenant.middleware';
@@ -29,6 +30,7 @@ import { TenantMiddleware } from './common/middleware/tenant.middleware';
     DashboardModule,
     WhatsAppModule,
     AiOrchestratorModule,
+    BillingModule,
     NotificationsModule,
   ],
   providers: [
@@ -37,8 +39,6 @@ import { TenantMiddleware } from './common/middleware/tenant.middleware';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer
-      .apply(TenantMiddleware)
-      .forRoutes('*');
+    consumer.apply(TenantMiddleware).forRoutes('*');
   }
 }

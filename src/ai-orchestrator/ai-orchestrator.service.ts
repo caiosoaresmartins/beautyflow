@@ -13,7 +13,6 @@ export interface OrchestrateInput {
   inWindow: boolean;
 }
 
-// Tool definitions para o agentic loop
 const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: 'function',
@@ -25,7 +24,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
         properties: {
           service_id: { type: 'string', description: 'ID do serviço' },
           professional_id: { type: 'string', description: 'ID do profissional (opcional)' },
-          date: { type: 'string', description: 'Data no formato YYYY-MM-DD' },
+          date: { type: 'string', description: 'Data YYYY-MM-DD' },
         },
         required: ['service_id', 'date'],
       },
@@ -35,7 +34,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'create_booking',
-      description: 'Cria um agendamento confirmado para o cliente.',
+      description: 'Cria agendamento confirmado para o cliente.',
       parameters: {
         type: 'object',
         properties: {
@@ -51,7 +50,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'list_services',
-      description: 'Lista os serviços disponíveis no salão.',
+      description: 'Lista os serviços ativos do salão.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -70,11 +69,53 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
       description: 'Cancela um agendamento futuro do cliente.',
       parameters: {
         type: 'object',
-        properties: {
-          booking_id: { type: 'string' },
-        },
+        properties: { booking_id: { type: 'string' } },
         required: ['booking_id'],
       },
+    },
+  },
+  // ── Billing tools (Fase 3) ─────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'check_subscription_status',
+      description: 'Verifica se o cliente tem assinatura ativa e se pode agendar.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_plans',
+      description: 'Lista os planos de assinatura disponíveis no salão (ex: Clube da Barba).',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_subscription',
+      description: 'Cria uma assinatura recorrente para o cliente.',
+      parameters: {
+        type: 'object',
+        properties: {
+          plan_name: { type: 'string', description: 'Nome do plano' },
+          billing_type: {
+            type: 'string',
+            enum: ['PIX', 'CREDIT_CARD', 'BOLETO'],
+            description: 'Forma de pagamento, padrão PIX',
+          },
+        },
+        required: ['plan_name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_payment_link',
+      description: 'Retorna link de pagamento para regularizar inadimplência do cliente.',
+      parameters: { type: 'object', properties: {} },
     },
   },
 ];
@@ -83,16 +124,17 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
 export class AiOrchestratorService {
   private readonly logger = new Logger(AiOrchestratorService.name);
   private readonly openai: OpenAI;
-  // Rate limit: max 10 mensagens por cliente por minuto
   private readonly RATE_LIMIT_MAX = 10;
-  private readonly RATE_LIMIT_WINDOW = 60; // segundos
+  private readonly RATE_LIMIT_WINDOW = 60;
+
+  // BillingToolsService injetado dinamicamente para evitar dependência circular
+  public billingTools: any;
 
   constructor(
     private readonly availability: AvailabilityService,
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
   ) {
-    // Suporte a Groq (free) ou OpenAI
     const useGroq = process.env.USE_GROQ === 'true';
     this.openai = new OpenAI({
       apiKey: useGroq ? process.env.GROQ_API_KEY : process.env.OPENAI_API_KEY,
@@ -104,51 +146,52 @@ export class AiOrchestratorService {
     // Rate limiting por cliente
     const rateLimitKey = `ai:ratelimit:${input.clientId}`;
     const count = await this.redis.incr(rateLimitKey);
-    if (count === 1) {
-      await this.redis.expire(rateLimitKey, this.RATE_LIMIT_WINDOW);
-    }
+    if (count === 1) await this.redis.expire(rateLimitKey, this.RATE_LIMIT_WINDOW);
     if (count > this.RATE_LIMIT_MAX) {
       return 'Por favor, aguarde um momento antes de enviar mais mensagens 🙏';
     }
 
-    // Buscar histórico recente (últimas 20 mensagens)
+    // Verificar inadimplência antes de processar (fast path)
+    if (this.billingTools) {
+      const canBook = await this.billingTools.checkSubscriptionStatus(
+        input.clientId,
+        input.salonId,
+      );
+      if (canBook.hasSubscription && !canBook.canBook) {
+        const link = canBook.paymentLink ? `\n\nPague aqui: ${canBook.paymentLink}` : '';
+        return `${canBook.blockReason}${link}`;
+      }
+    }
+
+    // Histórico recente
     const history = await this.prisma.conversationMessage.findMany({
-      where: {
-        clientId: input.clientId,
-        salonId: input.salonId,
-        expiresAt: { gt: new Date() },
-      },
+      where: { clientId: input.clientId, salonId: input.salonId, expiresAt: { gt: new Date() } },
       orderBy: { createdAt: 'desc' },
       take: 20,
     });
 
-    // Buscar dados do salão
-    const salon = await this.prisma.salon.findUnique({
-      where: { id: input.salonId },
-    });
+    const salon = await this.prisma.salon.findUnique({ where: { id: input.salonId } });
 
-    const systemPrompt = `Você é o assistente virtual do salão "${salon?.name ?? 'Salão'}". 
+    const systemPrompt = `Você é o assistente virtual do salão "${salon?.name ?? 'Salão'}".
 Seu objetivo é ajudar clientes a agendar, reagendar e cancelar serviços de beleza via WhatsApp.
 Sempre seja cordial, objetivo e use linguagem informal mas profissional.
-Quando o cliente quiser agendar, use check_availability antes de criar o booking.
-Confirme os detalhes antes de criar o agendamento.
+Antes de agendar, verifique disponibilidade. Confirme detalhes antes de criar o booking.
+Se o cliente perguntar sobre planos/assinaturas, liste os planos disponíveis.
 Fuso horário: America/Sao_Paulo.`;
 
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...history
-        .reverse()
-        .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      ...history.reverse().map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      })),
       { role: 'user', content: input.userMessage },
     ];
 
     const model = process.env.USE_GROQ === 'true' ? 'llama-3.3-70b-versatile' : 'gpt-4o';
-
-    // Agentic loop (máximo 5 iterações para evitar loop infinito)
     let iterations = 0;
-    const MAX_ITERATIONS = 5;
 
-    while (iterations < MAX_ITERATIONS) {
+    while (iterations < 5) {
       iterations++;
       const response = await this.openai.chat.completions.create({
         model,
@@ -163,36 +206,30 @@ Fuso horário: America/Sao_Paulo.`;
       const assistantMessage = choice.message;
       messages.push(assistantMessage);
 
-      // Sem tool calls — resposta final
       if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
         return assistantMessage.content ?? 'Desculpe, não entendi. Pode repetir?';
       }
 
-      // Executar tool calls em paralelo
       const toolResults = await Promise.all(
         assistantMessage.tool_calls.map(async (tc) => {
-          const result = await this.executeTool(tc.function.name, JSON.parse(tc.function.arguments), input);
-          return {
-            role: 'tool' as const,
-            tool_call_id: tc.id,
-            content: JSON.stringify(result),
-          };
+          const result = await this.executeTool(
+            tc.function.name,
+            JSON.parse(tc.function.arguments),
+            input,
+          );
+          return { role: 'tool' as const, tool_call_id: tc.id, content: JSON.stringify(result) };
         }),
       );
-
       messages.push(...toolResults);
     }
 
     return 'Desculpe, estou com dificuldades no momento. Por favor, ligue para o salão.';
   }
 
-  private async executeTool(
-    name: string,
-    args: Record<string, any>,
-    ctx: OrchestrateInput,
-  ): Promise<any> {
-    this.logger.log(`Executando tool: ${name}`, args);
+  private async executeTool(name: string, args: Record<string, any>, ctx: OrchestrateInput) {
+    this.logger.log(`Tool: ${name}`, args);
     switch (name) {
+      // ── Agendamento ───────────────────────────────────────────────────────
       case 'check_availability':
         return this.availability.checkAvailability({
           salonId: ctx.salonId,
@@ -215,10 +252,7 @@ Fuso horário: America/Sao_Paulo.`;
           where: { salonId: ctx.salonId, active: true },
           select: { id: true, name: true, durationMinutes: true, priceDefault: true },
         });
-        return services.map((s) => ({
-          ...s,
-          priceDefault: Number(s.priceDefault),
-        }));
+        return services.map((s) => ({ ...s, priceDefault: Number(s.priceDefault) }));
       }
 
       case 'get_client_bookings': {
@@ -246,40 +280,53 @@ Fuso horário: America/Sao_Paulo.`;
 
       case 'cancel_booking': {
         const booking = await this.prisma.booking.findFirst({
-          where: {
-            id: args.booking_id,
-            clientId: ctx.clientId,
-            status: { not: 'CANCELLED' },
-          },
+          where: { id: args.booking_id, clientId: ctx.clientId, status: { not: 'CANCELLED' } },
         });
         if (!booking) return { error: 'Agendamento não encontrado' };
         if (booking.startsAt < new Date()) return { error: 'Não é possível cancelar agendamentos passados' };
-        await this.prisma.booking.update({
-          where: { id: booking.id },
-          data: { status: 'CANCELLED' },
-        });
-        return { success: true, message: 'Agendamento cancelado com sucesso' };
+        await this.prisma.booking.update({ where: { id: booking.id }, data: { status: 'CANCELLED' } });
+        return { success: true };
       }
+
+      // ── Billing ───────────────────────────────────────────────────────────
+      case 'check_subscription_status':
+        if (!this.billingTools) return { error: 'Billing não disponível' };
+        return this.billingTools.checkSubscriptionStatus(ctx.clientId, ctx.salonId);
+
+      case 'list_plans':
+        if (!this.billingTools) return { error: 'Billing não disponível' };
+        return this.billingTools.listPlans(ctx.salonId);
+
+      case 'create_subscription': {
+        if (!this.billingTools) return { error: 'Billing não disponível' };
+        const billingType = args.billing_type ?? 'PIX';
+        return this.billingTools.createSubscription(
+          ctx.clientId,
+          ctx.salonId,
+          args.plan_name,
+          billingType,
+        );
+      }
+
+      case 'get_payment_link':
+        if (!this.billingTools) return { error: 'Billing não disponível' };
+        return this.billingTools.getPaymentLink(ctx.clientId, ctx.salonId);
 
       default:
         return { error: `Tool desconhecida: ${name}` };
     }
   }
 
-  /** Transcreve áudio via Whisper */
   async transcribeAudio(buffer: Buffer): Promise<string> {
-    // Groq também suporta Whisper
     const useGroq = process.env.USE_GROQ === 'true';
     const client = new OpenAI({
       apiKey: useGroq ? process.env.GROQ_API_KEY : process.env.OPENAI_API_KEY,
       baseURL: useGroq ? 'https://api.groq.com/openai/v1' : undefined,
     });
-
     const { Readable } = await import('stream');
     const stream = Readable.from(buffer) as any;
     stream.name = 'audio.ogg';
     stream.type = 'audio/ogg';
-
     const transcription = await client.audio.transcriptions.create({
       model: 'whisper-1',
       file: stream,
