@@ -1,4 +1,4 @@
-name: Deploy → Render
+name: Deploy -> Render
 
 on:
   push:
@@ -8,19 +8,17 @@ jobs:
   deploy:
     name: Deploy to Render
     runs-on: ubuntu-latest
+    env:
+      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
 
     steps:
-      - name: Trigger Render Deploy Hook
-        if: ${{ secrets.RENDER_DEPLOY_HOOK != '' }}
+      - name: Trigger Render deploy hook
+        if: ${{ env.RENDER_DEPLOY_HOOK != '' }}
         run: |
           curl -s -X POST "$RENDER_DEPLOY_HOOK" \
             -H 'Content-Type: application/json' \
             --fail --show-error
-        env:
-          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
-          # Configure em: Render Dashboard → seu serviço → Settings → Deploy Hook
-          # Depois adicione como secret no GitHub: Settings → Secrets → RENDER_DEPLOY_HOOK
 
       - name: Skip deploy (RENDER_DEPLOY_HOOK not configured)
-        if: ${{ secrets.RENDER_DEPLOY_HOOK == '' }}
-        run: echo "⚠️  RENDER_DEPLOY_HOOK secret não configurado — deploy pulado. Configure em Render Dashboard."
+        if: ${{ env.RENDER_DEPLOY_HOOK == '' }}
+        run: echo "RENDER_DEPLOY_HOOK secret nao configurado - deploy pulado. Configure em Render Dashboard."
