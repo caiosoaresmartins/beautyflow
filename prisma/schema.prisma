@@ -233,6 +233,7 @@ model Subscription {
   client   Client   @relation(fields: [clientId], references: [id])
   plan     Plan     @relation(fields: [planId], references: [id])
   bookings Booking[]
+  salon    Salon   @relation(fields: [salonId], references: [id])
   charges  Charge[]
 
   @@map("subscriptions")
