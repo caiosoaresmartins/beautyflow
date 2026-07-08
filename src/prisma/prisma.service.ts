@@ -1,5 +1,5 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -25,9 +25,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     if (process.env.NODE_ENV === 'production') {
       throw new Error('Nao e possivel limpar o banco em producao');
     }
-    const tablenames = await this.$queryRaw<Array<{ tablename: string }>>(
-      `SELECT tablename FROM pg_tables WHERE schemaname='public'`
-    );
+    const tablenames = (await this.$queryRaw(
+      Prisma.sql`SELECT tablename FROM pg_tables WHERE schemaname='public'`
+    )) as Array<{ tablename: string }>
     for (const { tablename } of tablenames) {
       if (tablename !== '_prisma_migrations') {
         await this.$executeRawUnsafe(`TRUNCATE TABLE "${tablename}" CASCADE;`);
