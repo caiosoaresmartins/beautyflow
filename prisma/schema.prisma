@@ -1,5 +1,5 @@
 // BeautyFlow — Prisma Schema
-// Versão: 0.6 | Fase 2+3: campos WhatsApp, Notificações e Billing
+// Versão: 0.7 | fix: campos faltantes em Plan, WorkingHours usa dayOfWeek
 
 generator client {
   provider = "prisma-client-js"
@@ -10,7 +10,7 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─── TENANT ────────────────────────────────────────────────────────────────
+// ─── TENANT ──────────────────────────────────────────────────────────────────
 
 model Salon {
   id                    String   @id @default(cuid())
@@ -33,16 +33,16 @@ model Salon {
   @@map("salons")
 }
 
-// ─── PROFISSIONAL ───────────────────────────────────────────────────────────
+// ─── PROFISSIONAL ─────────────────────────────────────────────────────────────
 
 model Professional {
   id                 String           @id @default(cuid())
   salonId            String
   name               String
-  email              String           @unique  // fix CRÍTICO-02: campo de autenticação
-  passwordHash       String                    // fix CRÍTICO-02: campo de autenticação
-  phone              String?                   // fix CRÍTICO-02: contato
-  bio                String?                   // descrição do profissional
+  email              String           @unique // fix CRÍTICO-02: campo de autenticação
+  passwordHash       String           // fix CRÍTICO-02: campo de autenticação
+  phone              String?          // fix CRÍTICO-02: contato
+  bio                String?          // descrição do profissional
   role               ProfessionalRole @default(PROFESSIONAL)
   gatewayRecipientId String?          // walletId/recipientId no gateway
   commissionRules    CommissionRule[]
@@ -94,7 +94,7 @@ model SalonHoliday {
   @@map("salon_holidays")
 }
 
-// ─── SERVIÇO ────────────────────────────────────────────────────────────────
+// ─── SERVIÇO ──────────────────────────────────────────────────────────────────
 
 model Service {
   id              String           @id @default(cuid())
@@ -112,45 +112,44 @@ model Service {
 }
 
 model CommissionRule {
-  id              String       @id @default(cuid())
-  professionalId  String
-  serviceId       String?      // null = regra padrão do profissional
-  percentage      Decimal      @db.Decimal(5, 2)  // percentual do profissional
-  professionalPct Decimal      @db.Decimal(5, 2)  // ex: 60.00
-  salonPct        Decimal      @db.Decimal(5, 2)  // ex: 25.00
-  platformPct     Decimal      @db.Decimal(5, 2)  // ex: 15.00
+  id             String       @id @default(cuid())
+  professionalId String
+  serviceId      String?      // null = regra padrão do profissional
+  percentage     Decimal      @db.Decimal(5, 2) // percentual do profissional
+  professionalPct Decimal     @db.Decimal(5, 2) // ex: 60.00
+  salonPct       Decimal      @db.Decimal(5, 2) // ex: 25.00
+  platformPct    Decimal      @db.Decimal(5, 2) // ex: 15.00
   // Constraint app layer: professionalPct + salonPct + platformPct = 100
-  professional    Professional @relation(fields: [professionalId], references: [id])
-  service         Service?     @relation(fields: [serviceId], references: [id])
+  professional   Professional @relation(fields: [professionalId], references: [id])
+  service        Service?     @relation(fields: [serviceId], references: [id])
 
   @@map("commission_rules")
 }
 
-// ─── AGENDAMENTO ────────────────────────────────────────────────────────────
+// ─── AGENDAMENTO ──────────────────────────────────────────────────────────────
 
 model Booking {
-  id              String        @id @default(cuid())
-  salonId         String
-  clientId        String
-  professionalId  String
-  serviceId       String
-  subscriptionId  String?
-  startsAt        DateTime
-  endsAt          DateTime
-  status          BookingStatus @default(CONFIRMED)
-  noShowFee       Decimal?      @db.Decimal(10, 2)
-  cancelledAt     DateTime?
-  rescheduledFrom String?       // bookingId anterior
-  reminderSentAt  DateTime?     // controla envio de lembrete 24h — evita duplicatas
-  deletedAt       DateTime?     // soft delete
-  createdAt       DateTime      @default(now())
-
-  salon        Salon         @relation(fields: [salonId], references: [id])
-  client       Client        @relation(fields: [clientId], references: [id])
-  professional Professional  @relation(fields: [professionalId], references: [id])
-  service      Service       @relation(fields: [serviceId], references: [id])
-  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
-  charges      Charge[]
+  id               String        @id @default(cuid())
+  salonId          String
+  clientId         String
+  professionalId   String
+  serviceId        String
+  subscriptionId   String?
+  startsAt         DateTime
+  endsAt           DateTime
+  status           BookingStatus @default(CONFIRMED)
+  noShowFee        Decimal?      @db.Decimal(10, 2)
+  cancelledAt      DateTime?
+  rescheduledFrom  String?       // bookingId anterior
+  reminderSentAt   DateTime?     // controla envio de lembrete 24h — evita duplicatas
+  deletedAt        DateTime?     // soft delete
+  createdAt        DateTime      @default(now())
+  salon            Salon         @relation(fields: [salonId], references: [id])
+  client           Client        @relation(fields: [clientId], references: [id])
+  professional     Professional  @relation(fields: [professionalId], references: [id])
+  service          Service       @relation(fields: [serviceId], references: [id])
+  subscription     Subscription? @relation(fields: [subscriptionId], references: [id])
+  charges          Charge[]
 
   @@index([professionalId, startsAt, endsAt])
   @@index([salonId, startsAt])
@@ -168,46 +167,48 @@ enum BookingStatus {
   PENDING_PAYMENT
 }
 
-// ─── CLIENTE ────────────────────────────────────────────────────────────────
+// ─── CLIENTE ──────────────────────────────────────────────────────────────────
 
 model Client {
-  id                String    @id @default(cuid())
+  id                String               @id @default(cuid())
   salonId           String
-  whatsappId        String?   // número E.164 — opcional para clientes criados pelo admin
+  whatsappId        String?              // número E.164 — opcional para clientes criados pelo admin
   name              String
-  email             String?   // fix CRÍTICO-04: campo adicionado
-  phone             String?   // fix CRÍTICO-04: campo adicionado
-  notes             String?   // fix CRÍTICO-04: campo adicionado
-  cpf               String?   // criptografar AES-256 antes de persistir
-  optedOut          Boolean   @default(false)
+  email             String?              // fix CRÍTICO-04: campo adicionado
+  phone             String?              // fix CRÍTICO-04: campo adicionado
+  notes             String?              // fix CRÍTICO-04: campo adicionado
+  cpf               String?              // criptografar AES-256 antes de persistir
+  optedOut          Boolean              @default(false)
   optedOutAt        DateTime?
-  gatewayCustomerId String?   // ID do customer no Asaas (Billing)
-  createdAt         DateTime  @default(now())
-  deletedAt         DateTime? // soft delete
-
-  bookings      Booking[]
-  subscriptions Subscription[]
-  conversations ConversationMessage[]
+  gatewayCustomerId String?              // ID do customer no Asaas (Billing)
+  createdAt         DateTime             @default(now())
+  deletedAt         DateTime?            // soft delete
+  bookings          Booking[]
+  subscriptions     Subscription[]
+  conversations     ConversationMessage[]
 
   @@unique([salonId, whatsappId])
   @@map("clients")
 }
 
-// ─── PLANO & ASSINATURA ─────────────────────────────────────────────────────
+// ─── PLANO & ASSINATURA ───────────────────────────────────────────────────────
 
 model Plan {
-  id              String   @id @default(cuid())
-  salonId         String
-  name            String
-  price           Decimal  @db.Decimal(10, 2)  // alias para priceMonthly
-  priceMonthly    Decimal  @db.Decimal(10, 2)
-  billingCycleDay Int      // dia do mês (1–28)
-  creditsPerCycle Int      // nº de serviços incluídos por ciclo
-  currency        String   @default("BRL")
-  gatewayPlanId   String?
-  active          Boolean  @default(true)
-  salon           Salon    @relation(fields: [salonId], references: [id])
-  subscriptions   Subscription[]
+  id               String         @id @default(cuid())
+  salonId          String
+  name             String
+  description      String?        // descrição do plano
+  price            Decimal        @db.Decimal(10, 2) // alias para priceMonthly
+  priceMonthly     Decimal        @db.Decimal(10, 2)
+  billingCycleDay  Int            // dia do mês (1–28)
+  creditsPerCycle  Int            // nº de serviços incluídos por ciclo
+  bookingsPerMonth Int            @default(0) // agendamentos incluídos por mês
+  currency         String         @default("BRL")
+  gatewayPlanId    String?
+  active           Boolean        @default(true)
+  createdAt        DateTime       @default(now())
+  salon            Salon          @relation(fields: [salonId], references: [id])
+  subscriptions    Subscription[]
 
   @@map("plans")
 }
@@ -229,12 +230,11 @@ model Subscription {
   createdAt             DateTime           @default(now())
   cancelledAt           DateTime?
   pastDueAt             DateTime?
-
-  client   Client   @relation(fields: [clientId], references: [id])
-  plan     Plan     @relation(fields: [planId], references: [id])
-  bookings Booking[]
-  salon    Salon   @relation(fields: [salonId], references: [id])
-  charges  Charge[]
+  client                Client             @relation(fields: [clientId], references: [id])
+  plan                  Plan               @relation(fields: [planId], references: [id])
+  bookings              Booking[]
+  salon                 Salon              @relation(fields: [salonId], references: [id])
+  charges               Charge[]
 
   @@map("subscriptions")
 }
@@ -248,25 +248,26 @@ enum SubscriptionStatus {
   PENDING
 }
 
-// ─── COBRANÇA & SPLIT ───────────────────────────────────────────────────────
+// ─── COBRANÇA & SPLIT ─────────────────────────────────────────────────────────
 
 model Charge {
-  id              String       @id @default(cuid())
-  salonId         String
+  id              String      @id @default(cuid())
+  salonId         String?
   bookingId       String?
   subscriptionId  String?
   clientId        String?
-  grossAmount     Decimal?     @db.Decimal(10, 2)
-  netAmount       Decimal?     @db.Decimal(10, 2)
-  amount          Decimal?     @db.Decimal(10, 2)  // usado pelo BillingService
-  currency        String       @default("BRL")
+  grossAmount     Decimal?    @db.Decimal(10, 2)
+  netAmount       Decimal?    @db.Decimal(10, 2)
+  amount          Decimal?    @db.Decimal(10, 2) // usado pelo BillingService
+  currency        String      @default("BRL")
   status          ChargeStatus @default(PENDING)
   gatewayChargeId String?
   paidAt          DateTime?
   refundedAt      DateTime?
-  refundedAmount  Decimal?     @db.Decimal(10, 2)
+  refundedAmount  Decimal?    @db.Decimal(10, 2)
+  createdAt       DateTime    @default(now())
   splits          ChargeSplit[]
-  booking         Booking?     @relation(fields: [bookingId], references: [id])
+  booking         Booking?    @relation(fields: [bookingId], references: [id])
   subscription    Subscription? @relation(fields: [subscriptionId], references: [id])
 
   @@map("charges")
@@ -311,37 +312,36 @@ enum SplitStatus {
   FAILED
 }
 
-// ─── IDEMPOTÊNCIA DE WEBHOOKS ───────────────────────────────────────────────
+// ─── IDEMPOTÊNCIA DE WEBHOOKS ─────────────────────────────────────────────────
 
 model WebhookEvent {
-  id              String   @id @default(cuid())
-  gatewayEventId  String   @unique  // ID único do evento vindo do gateway/Meta
-  salonId         String?
-  source          String?  // "ASAAS" | "META_WHATSAPP"
-  type            String?  // tipo do evento ex: PAYMENT_RECEIVED
-  payload         String   @db.Text
-  processedAt     DateTime @default(now())
-  salon           Salon?   @relation(fields: [salonId], references: [id])
+  id             String   @id @default(cuid())
+  gatewayEventId String   @unique // ID único do evento vindo do gateway/Meta
+  salonId        String?
+  source         String?  // "ASAAS" | "META_WHATSAPP"
+  type           String?  // tipo do evento ex: PAYMENT_RECEIVED
+  payload        String   @db.Text
+  processedAt    DateTime @default(now())
+  salon          Salon?   @relation(fields: [salonId], references: [id])
 
   @@map("webhook_events")
 }
 
-// ─── CONVERSA / IA ──────────────────────────────────────────────────────────
+// ─── CONVERSA / IA ────────────────────────────────────────────────────────────
 
 model ConversationMessage {
-  id        String    @id @default(cuid())
+  id        String   @id @default(cuid())
   clientId  String
   salonId   String
-  role      String    // "user" | "assistant" | "tool"
-  content   String    @db.Text
+  role      String   // "user" | "assistant" | "tool"
+  content   String   @db.Text
   tokens    Int?
-  createdAt DateTime  @default(now())
+  createdAt DateTime @default(now())
   expiresAt DateTime? // retenção com TTL (LGPD: 30 dias)
-
-  client Client @relation(fields: [clientId], references: [id])
-  salon  Salon  @relation(fields: [salonId], references: [id])
+  client    Client   @relation(fields: [clientId], references: [id])
+  salon     Salon    @relation(fields: [salonId], references: [id])
 
   @@index([clientId, createdAt])
-  @@index([expiresAt])  // índice para limpeza periódica de mensagens expiradas
+  @@index([expiresAt]) // índice para limpeza periódica de mensagens expiradas
   @@map("conversation_messages")
 }
