@@ -8,9 +8,9 @@ import { toNumber } from '../common/helpers/decimal.helper';
 export class SalonsService {
   constructor(private prisma: PrismaService) {}
 
-  async create(ownerId: string, dto: CreateSalonDto) {
+  async create(dto: CreateSalonDto) {
     return this.prisma.salon.create({
-      data: { ...dto, ownerId },
+      data: { ...dto },
     });
   }
 
@@ -27,7 +27,7 @@ export class SalonsService {
         },
       },
     });
-    if (!salon) throw new NotFoundException('Salão não encontrado.');
+    if (!salon) throw new NotFoundException('Salao nao encontrado.');
     return salon;
   }
 
