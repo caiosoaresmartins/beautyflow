@@ -34,11 +34,11 @@ export class AvailabilityService {
         salonId,
         ...(professionalId ? { id: professionalId } : {}),
         workingHours: {
-          some: { dayOfWeek, active: true },
+          some: { dayOfWeek },
         },
       },
       include: {
-        workingHours: { where: { dayOfWeek, active: true } },
+        workingHours: { where: { dayOfWeek } },
         leaveBlocks: {
           where: {
             startsAt: { lte: new Date(`${date}T23:59:59`) },
@@ -73,7 +73,6 @@ export class AvailabilityService {
         whEnd.setHours(endH, endM, 0, 0);
 
         let cursor = whStart.getTime();
-
         while (cursor + durationMs <= whEnd.getTime()) {
           const slotStart = new Date(cursor);
           const slotEnd = new Date(cursor + durationMs);
