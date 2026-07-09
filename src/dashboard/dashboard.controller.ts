@@ -1,4 +1,4 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, UseGuards, Query } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { DashboardService } from './dashboard.service';
@@ -17,8 +17,11 @@ export class DashboardController {
   }
 
   @Get('revenue')
-  @ApiOperation({ summary: 'Get revenue stats for current month' })
-  getRevenueStats(@Param('salonId') salonId: string) {
-    return this.dashboardService.getRevenueStats(salonId);
+  @ApiOperation({ summary: 'Get revenue chart for current month' })
+  getRevenueChart(
+    @Param('salonId') salonId: string,
+    @Query('days') days?: string,
+  ) {
+    return this.dashboardService.getRevenueChart(salonId, days ? parseInt(days, 10) : 30);
   }
 }
