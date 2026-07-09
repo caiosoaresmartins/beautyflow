@@ -3,10 +3,9 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
-  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { AsaasService, AsaasSplitItem } from './asaas.service';
+import { AsaasService } from './asaas.service';
 import { format, addMonths } from 'date-fns';
 import { Decimal } from '@prisma/client/runtime/library';
 
@@ -51,28 +50,23 @@ export class SubscriptionsService {
     if (existing) throw new BadRequestException('Cliente já possui assinatura ativa neste plano');
 
     // Criar/buscar cliente Asaas
-    const asaasCustomerId = await this.asaas.upsertCustomer({
+    const asaasCustomer = await this.asaas.createCustomer({
       name: client.name,
       cpfCnpj: client.cpf ?? undefined,
       email: client.email ?? undefined,
       phone: client.phone ?? undefined,
-      externalReference: client.id,
     });
-
-    // Split do salão (sem split por ora — salão fica com 100%)
-    // Expandir quando o salão tiver gatewayRecipientId
-    const split: AsaasSplitItem[] = [];
+    const asaasCustomerId = asaasCustomer.id;
 
     const nextDueDate = format(new Date(), 'yyyy-MM-dd');
     const result = await this.asaas.createSubscription({
-      customerId: asaasCustomerId,
+      customer: asaasCustomerId,
       billingType: input.billingType,
       value: Number(plan.price as Decimal),
       nextDueDate,
       cycle: 'MONTHLY',
       description: `${plan.name} — ${client.name}`,
       externalReference: `${input.clientId}:${input.planId}`,
-      split: split.length > 0 ? split : undefined,
     });
 
     // Persistir no banco
@@ -81,17 +75,17 @@ export class SubscriptionsService {
         salonId: input.salonId,
         clientId: input.clientId,
         planId: input.planId,
-        externalId: result.subscriptionId,
+        gatewaySubId: result.id,
         status: 'PENDING',
         currentPeriodStart: new Date(),
         currentPeriodEnd: addMonths(new Date(), 1),
-        creditsLeft: 0, // será incrementado quando PAYMENT_RECEIVED chegar
+        creditsTotal: 0,
       },
     });
 
     return {
       subscriptionId: subscription.id,
-      externalId: result.subscriptionId,
+      externalId: result.id,
       status: result.status,
       plan: plan.name,
       value: Number(plan.price as Decimal),
@@ -104,14 +98,17 @@ export class SubscriptionsService {
     const sub = await this.prisma.subscription.findFirst({
       where: { id: subscriptionId, salonId },
     });
+
     if (!sub) throw new NotFoundException('Assinatura não encontrada');
-    if (sub.externalId) {
+
+    if (sub.gatewaySubId) {
       try {
-        await this.asaas.cancelSubscription(sub.externalId);
+        await this.asaas.cancelSubscription(sub.gatewaySubId);
       } catch (err) {
-        this.logger.warn(`Falha ao cancelar no Asaas: ${sub.externalId}`, err);
+        this.logger.warn(`Falha ao cancelar no Asaas: ${sub.gatewaySubId}`, err);
       }
     }
+
     await this.prisma.subscription.update({
       where: { id: subscriptionId },
       data: { status: 'CANCELLED', cancelledAt: new Date() },
@@ -141,39 +138,25 @@ export class SubscriptionsService {
    * Verifica se o cliente está inadimplente.
    * Retorna true se pode agendar, false se deve ser bloqueado.
    */
-  async canBook(clientId: string, salonId: string): Promise<{
-    allowed: boolean;
-    reason?: string;
-    paymentLink?: string;
-  }> {
-    // Busca assinaturas PAST_DUE ou OVERDUE
+  async canBook(
+    clientId: string,
+    salonId: string,
+  ): Promise<{ allowed: boolean; reason?: string }> {
+    // Busca assinaturas PAST_DUE
     const overdueSubscription = await this.prisma.subscription.findFirst({
       where: {
         clientId,
         salonId,
-        status: { in: ['PAST_DUE', 'OVERDUE'] },
+        status: { in: ['PAST_DUE'] },
       },
       include: { plan: true },
     });
 
     if (!overdueSubscription) return { allowed: true };
 
-    // Buscar última cobrança em aberto para gerar link
-    const lastCharge = await this.prisma.charge.findFirst({
-      where: {
-        clientId,
-        salonId,
-        status: { in: ['PENDING', 'OVERDUE'] },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const paymentLink = lastCharge?.invoiceUrl ?? undefined;
-
     return {
       allowed: false,
       reason: `Assinatura "${overdueSubscription.plan.name}" com pagamento pendente. Regularize para continuar agendando.`,
-      paymentLink,
     };
   }
 
@@ -193,7 +176,7 @@ export class SubscriptionsService {
         id: s.id,
         plan: s.plan.name,
         status: s.status,
-        creditsLeft: s.creditsLeft,
+        creditsLeft: s.creditsTotal - s.creditsUsed,
         currentPeriodEnd: s.currentPeriodEnd?.toISOString(),
       })),
     };
