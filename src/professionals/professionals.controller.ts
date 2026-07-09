@@ -14,8 +14,15 @@ export class ProfessionalsController {
 
   @Get()
   @ApiOperation({ summary: 'List all professionals of a salon' })
-  findAll(@Param('salonId') salonId: string) {
-    return this.professionalsService.findAll(salonId);
+  findAll(
+    @Param('salonId') salonId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.professionalsService.findAll(salonId, {
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 20,
+    });
   }
 
   @Get(':id')
