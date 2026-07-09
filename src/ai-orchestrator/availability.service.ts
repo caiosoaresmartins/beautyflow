@@ -44,14 +44,17 @@ export class AvailabilityService {
     const whereProf: any = { salonId: input.salonId };
     if (input.professionalId) whereProf.id = input.professionalId;
 
+    const queryDate = new Date(input.date + 'T00:00:00Z');
+    const nextDate = new Date(queryDate.getTime() + 24 * 60 * 60 * 1000);
+
     const professionals = await this.prisma.professional.findMany({
       where: whereProf,
       include: {
         workingHours: true,
         leaveBlocks: {
           where: {
-            startDate: { lte: new Date(input.date) },
-            endDate: { gte: new Date(input.date) },
+            startsAt: { lte: nextDate },
+            endsAt: { gte: queryDate },
           },
         },
       },
@@ -65,18 +68,18 @@ export class AvailabilityService {
     for (const prof of professionals) {
       if (prof.leaveBlocks.length > 0) continue;
 
-      const wh = prof.workingHours.find((w: any) => w.weekday === dayOfWeek);
-      if (!wh || !wh.active) continue;
+      const wh = prof.workingHours.find((w: any) => w.dayOfWeek === dayOfWeek);
+      if (!wh) continue;
 
       const startHour = parseInt(wh.startTime.split(':')[0]);
-      const startMin  = parseInt(wh.startTime.split(':')[1]);
-      const endHour   = parseInt(wh.endTime.split(':')[0]);
-      const endMin    = parseInt(wh.endTime.split(':')[1]);
+      const startMin = parseInt(wh.startTime.split(':')[1]);
+      const endHour = parseInt(wh.endTime.split(':')[0]);
+      const endMin = parseInt(wh.endTime.split(':')[1]);
 
-      let current  = setMinutes(setHours(dateInTz, startHour), startMin);
+      let current = setMinutes(setHours(dateInTz, startHour), startMin);
       const dayEnd = setMinutes(setHours(dateInTz, endHour), endMin);
 
-      const dayStart   = setMinutes(setHours(dateInTz, 0), 0);
+      const dayStart = setMinutes(setHours(dateInTz, 0), 0);
       const dayEndFull = setMinutes(setHours(dateInTz, 23), 59);
 
       const existingBookings = await this.prisma.booking.findMany({
@@ -90,20 +93,17 @@ export class AvailabilityService {
 
       while (addMinutes(current, duration) <= dayEnd) {
         const slotEnd = addMinutes(current, duration);
-
         const hasConflict = existingBookings.some(
           (b) => current < b.endsAt && slotEnd > b.startsAt,
         );
-
         if (!hasConflict && current > new Date()) {
           slots.push({
             professionalId: prof.id,
             professionalName: prof.name,
             startsAt: formatInTimeZone(current, this.TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssxxx"),
-            endsAt:   formatInTimeZone(slotEnd, this.TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssxxx"),
+            endsAt: formatInTimeZone(slotEnd, this.TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssxxx"),
           });
         }
-
         current = addMinutes(current, this.SLOT_GRANULARITY);
       }
     }
@@ -112,78 +112,60 @@ export class AvailabilityService {
   }
 
   /**
-   * Cria booking com proteção contra double-booking via SELECT FOR UPDATE NOWAIT.
-   *
-   * fix: a query anterior tentava bloquear linhas conflitantes e tratava o
-   * lock error como "slot ocupado" — mas NOWAIT lança erro se QUALQUER linha
-   * da query estiver travada, não necessariamente porque há conflito real.
-   * A abordagem correta é:
-   *   1. Verificar existência de conflito com uma SELECT sem lock.
-   *   2. Se livre, tentar INSERT (o lock na linha de bookings existentes
-   *      via FOR UPDATE previne race condition entre dois requests simultâneos).
+   * Cria booking com protecao contra double-booking via SELECT FOR UPDATE NOWAIT.
    */
   async createBookingAtomic(input: CreateBookingAtomicInput): Promise<any> {
     const service = await this.prisma.service.findFirst({
       where: { id: input.serviceId, salonId: input.salonId },
     });
-    if (!service) throw new ConflictException('Serviço não encontrado');
+    if (!service) throw new ConflictException('Servico nao encontrado');
 
     const endsAt = addMinutes(input.startsAt, service.durationMinutes);
 
     try {
       return await this.prisma.$transaction(async (tx) => {
-        /**
-         * fix: SELECT FOR UPDATE NOWAIT nas linhas que CONFLITAM com o slot
-         * desejado — bloqueia outras transações concorrentes que tentem criar
-         * booking para o mesmo profissional no mesmo horário.
-         * Se a query retornar 0 linhas → slot livre → prosseguir com INSERT.
-         * Se retornar ≥1 linha → conflito real → lançar ConflictException.
-         * Se outra transação tiver lock nas mesmas linhas → NOWAIT lança 55P03
-         *   → slot disputado simultaneamente → retornar erro de concorrência.
-         */
         const conflicts = await tx.$queryRaw<{ id: string }[]>`
           SELECT id FROM bookings
           WHERE professional_id = ${input.professionalId}::uuid
-            AND status != 'CANCELLED'
-            AND starts_at < ${endsAt}
-            AND ends_at   > ${input.startsAt}
+          AND status != 'CANCELLED'
+          AND starts_at < ${endsAt}
+          AND ends_at > ${input.startsAt}
           FOR UPDATE NOWAIT
         `;
 
         if (conflicts.length > 0) {
-          throw new ConflictException('Horário indisponível — já existe agendamento neste período');
+          throw new ConflictException('Horario indisponivel - ja existe agendamento neste periodo');
         }
 
         const booking = await tx.booking.create({
           data: {
-            salonId:        input.salonId,
-            clientId:       input.clientId,
-            serviceId:      input.serviceId,
+            salonId: input.salonId,
+            clientId: input.clientId,
+            serviceId: input.serviceId,
             professionalId: input.professionalId,
-            startsAt:       input.startsAt,
+            startsAt: input.startsAt,
             endsAt,
             status: 'CONFIRMED',
           },
           include: {
-            service:      { select: { name: true } },
+            service: { select: { name: true } },
             professional: { select: { name: true } },
           },
         });
 
         return {
-          success:      true,
-          bookingId:    booking.id,
-          service:      booking.service.name,
+          success: true,
+          bookingId: booking.id,
+          service: booking.service.name,
           professional: booking.professional.name,
-          startsAt:     booking.startsAt.toISOString(),
-          endsAt:       booking.endsAt.toISOString(),
+          startsAt: booking.startsAt.toISOString(),
+          endsAt: booking.endsAt.toISOString(),
         };
       });
     } catch (err: any) {
-      // Código PostgreSQL 55P03 = lock_not_available (NOWAIT)
       if (err?.code === '55P03') {
         throw new ConflictException(
-          'Horário disputado simultaneamente — tente novamente em instantes',
+          'Horario disputado simultaneamente - tente novamente em instantes',
         );
       }
       throw err;
