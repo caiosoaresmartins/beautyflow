@@ -1,6 +1,17 @@
 import {
-  Controller, Get, Post, Put, Patch, Delete,
-  Body, Param, Query, UseGuards, Request, HttpCode, HttpStatus,
+  Controller,
+  Get,
+  Post,
+  Put,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Request,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -23,7 +34,7 @@ export class ServicesController {
   // -----------------------------------------------------------
 
   @Get()
-  @ApiOperation({ summary: 'Listar serviços do salão (paginado, apenas ativos por padrão)' })
+  @ApiOperation({ summary: 'Listar servicos do salao (paginado, apenas ativos por padrao)' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'includeInactive', required: false, type: Boolean })
@@ -33,15 +44,19 @@ export class ServicesController {
     @Query('limit') limit?: string,
     @Query('includeInactive') includeInactive?: string,
   ) {
-    return this.servicesService.findAll(salonId, {
-      page: page ? parseInt(page, 10) : 1,
-      limit: limit ? parseInt(limit, 10) : 20,
-      includeInactive: includeInactive === 'true',
-    });
+    const onlyActive = includeInactive !== 'true';
+    return this.servicesService.findAll(
+      salonId,
+      {
+        page: page ? parseInt(page, 10) : 1,
+        limit: limit ? parseInt(limit, 10) : 20,
+      },
+      onlyActive,
+    );
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Buscar serviço por ID' })
+  @ApiOperation({ summary: 'Buscar servico por ID' })
   findOne(@Param('salonId') salonId: string, @Param('id') id: string) {
     return this.servicesService.findOne(id, salonId);
   }
@@ -49,7 +64,7 @@ export class ServicesController {
   @Post()
   @UseGuards(RolesGuard)
   @Roles(ProfessionalRole.OWNER)
-  @ApiOperation({ summary: 'Criar serviço (somente OWNER)' })
+  @ApiOperation({ summary: 'Criar servico (somente OWNER)' })
   create(@Param('salonId') salonId: string, @Body() dto: CreateServiceDto) {
     return this.servicesService.create(salonId, dto);
   }
@@ -57,7 +72,7 @@ export class ServicesController {
   @Put(':id')
   @UseGuards(RolesGuard)
   @Roles(ProfessionalRole.OWNER)
-  @ApiOperation({ summary: 'Atualizar serviço (somente OWNER)' })
+  @ApiOperation({ summary: 'Atualizar servico (somente OWNER)' })
   update(
     @Param('salonId') salonId: string,
     @Param('id') id: string,
@@ -70,19 +85,19 @@ export class ServicesController {
   @UseGuards(RolesGuard)
   @Roles(ProfessionalRole.OWNER)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Desativar serviço — soft delete (somente OWNER)' })
+  @ApiOperation({ summary: 'Desativar servico (somente OWNER)' })
   remove(@Param('salonId') salonId: string, @Param('id') id: string) {
     return this.servicesService.remove(id, salonId);
   }
 
   // -----------------------------------------------------------
-  // Vínculos Profissional <-> Serviço
+  // Vinculos Profissional <-> Servico
   // -----------------------------------------------------------
 
   @Post(':id/professionals/:professionalId')
   @UseGuards(RolesGuard)
   @Roles(ProfessionalRole.OWNER)
-  @ApiOperation({ summary: 'Vincular profissional a um serviço (somente OWNER)' })
+  @ApiOperation({ summary: 'Vincular profissional a um servico (somente OWNER)' })
   assignProfessional(
     @Param('salonId') salonId: string,
     @Param('id') serviceId: string,
@@ -95,7 +110,7 @@ export class ServicesController {
   @UseGuards(RolesGuard)
   @Roles(ProfessionalRole.OWNER)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Desvincular profissional de um serviço (somente OWNER)' })
+  @ApiOperation({ summary: 'Desvincular profissional de um servico (somente OWNER)' })
   removeProfessional(
     @Param('salonId') salonId: string,
     @Param('id') serviceId: string,
